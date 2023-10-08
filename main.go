@@ -12,10 +12,10 @@ import (
 	"strings"
 	"time"
 
-	"gopkg.in/yaml.v2"
 	"github.com/PuerkitoBio/goquery"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"gopkg.in/yaml.v2"
 )
 
 type Config struct {
@@ -41,15 +41,15 @@ type PortStatistics struct {
 func main() {
 
 	// Read config.json
-  config, err := readConfig("config.yaml")
-  if err != nil {
-  	log.Fatal("Error reading configuration:", err)
-  }
-  
-  // Check if required fields are provided in the configuration file
-  if config.Address == "" || config.Username == "" || config.Password == "" {
-  	log.Fatal("Missing required fields in the configuration file.")
-  }
+	config, err := readConfig("config.yaml")
+	if err != nil {
+		log.Fatal("Error reading configuration:", err)
+	}
+
+	// Check if required fields are provided in the configuration file
+	if config.Address == "" || config.Username == "" || config.Password == "" {
+		log.Fatal("Missing required fields in the configuration file.")
+	}
 
 	// Set the base URL
 	baseURL := "http://" + config.Address + "/port.cgi?page=stats"
