@@ -192,7 +192,7 @@ func main() {
 
 // Helper function to convert port state to float
 func stateToFloat(state string) float64 {
-	if state == "UP" {
+	if state == "Enable" {
 		return 1
 	}
 	return 0
