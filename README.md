@@ -26,5 +26,7 @@ docker run -v "./config.yaml:/config.yaml" -p 8080:8080 cheap-switch-exporter
 &nbsp;
 
 **Tested on**:
+* Ampcom WAMJHJ-8125MNG
+* Horaco ZX-SWTGW215AS
 * Horaco ZX-SWTGW218AS
 * Sodola SL-SWTG124AS (dennyreiter)
