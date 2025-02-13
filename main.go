@@ -23,11 +23,12 @@ import (
 )
 
 type Config struct {
-	Address  string `yaml:"address"`
-	Username string `yaml:"username"`
-	Password string `yaml:"password"`
-	PollRate int    `yaml:"poll_rate_seconds"`
-	Timeout  int    `yaml:"timeout_seconds"`
+	Address         string `yaml:"address"`
+	Username        string `yaml:"username"`
+	Password        string `yaml:"password"`
+	AuthMethod      string `yaml:"auth_method"` // "userpass" or "cookie"
+	PollRateSeconds int    `yaml:"poll_rate_seconds"`
+	TimeoutSeconds  int    `yaml:"timeout_seconds"`
 }
 
 type Port struct {
@@ -55,19 +56,31 @@ type PortStatsCollector struct {
 	lastScrapeDuration prometheus.Gauge
 	scrapeErrorsTotal  prometheus.Counter
 	mutex              sync.Mutex
+	client             *http.Client
+	// Fields specific to cookie authentication
+	cookieAuth struct {
+		cookie   *http.Cookie
+		lastAuth time.Time
+	}
 }
 
 func NewPortStatsCollector(config Config) *PortStatsCollector {
+	// Validate authentication method
+	if config.AuthMethod != "userpass" && config.AuthMethod != "cookie" {
+		log.Printf("Invalid auth_method %q, defaulting to userpass", config.AuthMethod)
+		config.AuthMethod = "userpass"
+	}
+
 	return &PortStatsCollector{
 		config: config,
 		portState: prometheus.NewDesc(
 			"port_state",
-			"State of the port",
+			"State of the port (1 = Enable, 0 = Disable)",
 			[]string{"port"}, nil,
 		),
 		portLinkStatus: prometheus.NewDesc(
 			"port_link_status",
-			"Link status of the port",
+			"Link status of the port (1 = Link Up, 0 = Link Down)",
 			[]string{"port"}, nil,
 		),
 		portTxGoodPkt: prometheus.NewDesc(
@@ -98,6 +111,9 @@ func NewPortStatsCollector(config Config) *PortStatsCollector {
 			Name: "exporter_scrape_errors_total",
 			Help: "Total number of scrape errors",
 		}),
+		client: &http.Client{
+			Timeout: time.Duration(config.TimeoutSeconds) * time.Second,
+		},
 	}
 }
 
@@ -110,12 +126,50 @@ func (c *PortStatsCollector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.portRxBadPkt
 }
 
+// authenticate performs cookie-based authentication and returns any error
+func (c *PortStatsCollector) authenticate() error {
+	// Check if we have a valid cookie less than 5 minutes old
+	if c.cookieAuth.cookie != nil && time.Since(c.cookieAuth.lastAuth) < 5*time.Minute {
+		return nil
+	}
+
+	loginURL := fmt.Sprintf("http://%s/login.cgi", c.config.Address)
+
+	req, err := http.NewRequest("GET", loginURL, nil)
+	if err != nil {
+		return fmt.Errorf("error creating auth request: %w", err)
+	}
+
+	q := req.URL.Query()
+	q.Add("username", c.config.Username)
+	q.Add("password", c.config.Password)
+	req.URL.RawQuery = q.Encode()
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("error during authentication: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("authentication failed with status: %d", resp.StatusCode)
+	}
+
+	for _, cookie := range resp.Cookies() {
+		c.cookieAuth.cookie = cookie
+		c.cookieAuth.lastAuth = time.Now()
+		return nil
+	}
+
+	return fmt.Errorf("no authentication cookie received")
+}
+
 func (c *PortStatsCollector) Collect(ch chan<- prometheus.Metric) {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 
 	start := time.Now()
-	stats, err := fetchPortStatistics(c.config)
+	stats, err := c.fetchPortStatistics()
 	if err != nil {
 		c.scrapeErrorsTotal.Inc()
 		log.Printf("Error fetching port statistics: %v", err)
@@ -132,19 +186,19 @@ func (c *PortStatsCollector) Collect(ch chan<- prometheus.Metric) {
 			linkStatusToFloat(port.LinkStatus), port.Name,
 		)
 		ch <- prometheus.MustNewConstMetric(
-			c.portTxGoodPkt, prometheus.GaugeValue,
+			c.portTxGoodPkt, prometheus.CounterValue,
 			float64(port.TxGoodPkt), port.Name,
 		)
 		ch <- prometheus.MustNewConstMetric(
-			c.portTxBadPkt, prometheus.GaugeValue,
+			c.portTxBadPkt, prometheus.CounterValue,
 			float64(port.TxBadPkt), port.Name,
 		)
 		ch <- prometheus.MustNewConstMetric(
-			c.portRxGoodPkt, prometheus.GaugeValue,
+			c.portRxGoodPkt, prometheus.CounterValue,
 			float64(port.RxGoodPkt), port.Name,
 		)
 		ch <- prometheus.MustNewConstMetric(
-			c.portRxBadPkt, prometheus.GaugeValue,
+			c.portRxBadPkt, prometheus.CounterValue,
 			float64(port.RxBadPkt), port.Name,
 		)
 	}
@@ -161,11 +215,11 @@ func main() {
 	}
 
 	// Set default values if not specified
-	if config.PollRate == 0 {
-		config.PollRate = 10 // Default 10 seconds
+	if config.PollRateSeconds == 0 {
+		config.PollRateSeconds = 10 // Default 10 seconds
 	}
-	if config.Timeout == 0 {
-		config.Timeout = 5 // Default 5 seconds
+	if config.TimeoutSeconds == 0 {
+		config.TimeoutSeconds = 5 // Default 5 seconds
 	}
 
 	// Validate configuration
@@ -194,36 +248,57 @@ func main() {
 	log.Println("Shutting down...")
 }
 
-func fetchPortStatistics(config Config) (PortStatistics, error) {
-	baseURL := "http://" + config.Address + "/port.cgi"
-	params := url.Values{}
-	params.Set("page", "stats")
+// fetchPortStatistics retrieves port statistics using the configured authentication method
+func (c *PortStatsCollector) fetchPortStatistics() (PortStatistics, error) {
+	var req *http.Request
+	var err error
 
-	formParams := url.Values{}
-	formParams.Set("username", config.Username)
-	formParams.Set("password", config.Password)
-	formParams.Set("language", "EN")
-	formParams.Set("Response", getMD5Hash(config.Username+config.Password))
+	statsURL := fmt.Sprintf("http://%s/port.cgi", c.config.Address)
 
-	client := &http.Client{
-		Timeout: time.Duration(config.Timeout) * time.Second,
+	if c.config.AuthMethod == "cookie" {
+		// Cookie-based authentication
+		if err := c.authenticate(); err != nil {
+			return PortStatistics{}, fmt.Errorf("authentication failed: %w", err)
+		}
+
+		req, err = http.NewRequest("GET", statsURL, nil)
+		if err != nil {
+			return PortStatistics{}, fmt.Errorf("error creating stats request: %w", err)
+		}
+
+		req.AddCookie(c.cookieAuth.cookie)
+	} else {
+		// Username/password authentication
+		formParams := url.Values{}
+		formParams.Set("username", c.config.Username)
+		formParams.Set("password", c.config.Password)
+		formParams.Set("language", "EN")
+		formParams.Set("Response", getMD5Hash(c.config.Username+c.config.Password))
+
+		req, err = http.NewRequest("GET", statsURL, strings.NewReader(formParams.Encode()))
+		if err != nil {
+			return PortStatistics{}, fmt.Errorf("error creating request: %w", err)
+		}
+
+		cookieValue := getMD5Hash(c.config.Username + c.config.Password)
+		req.AddCookie(&http.Cookie{Name: "admin", Value: cookieValue})
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	}
 
-	req, err := http.NewRequest("GET", baseURL, strings.NewReader(formParams.Encode()))
-	if err != nil {
-		return PortStatistics{}, fmt.Errorf("error creating request: %w", err)
-	}
+	// Common parameters for both authentication methods
+	q := req.URL.Query()
+	q.Add("page", "stats")
+	req.URL.RawQuery = q.Encode()
 
-	cookieValue := getMD5Hash(config.Username + config.Password)
-	req.AddCookie(&http.Cookie{Name: "admin", Value: cookieValue})
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.URL.RawQuery = params.Encode()
-
-	resp, err := client.Do(req)
+	resp, err := c.client.Do(req)
 	if err != nil {
 		return PortStatistics{}, fmt.Errorf("error sending request: %w", err)
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return PortStatistics{}, fmt.Errorf("stats request failed with status: %d", resp.StatusCode)
+	}
 
 	doc, err := goquery.NewDocumentFromReader(resp.Body)
 	if err != nil {
