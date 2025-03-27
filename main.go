@@ -23,10 +23,10 @@ import (
 )
 
 type Config struct {
+	Listen   string `yaml:"listen"`
 	Address  string `yaml:"address"`
 	Username string `yaml:"username"`
 	Password string `yaml:"password"`
-	PollRate int    `yaml:"poll_rate_seconds"`
 	Timeout  int    `yaml:"timeout_seconds"`
 }
 
@@ -161,11 +161,11 @@ func main() {
 	}
 
 	// Set default values if not specified
-	if config.PollRate == 0 {
-		config.PollRate = 10 // Default 10 seconds
-	}
 	if config.Timeout == 0 {
 		config.Timeout = 5 // Default 5 seconds
+	}
+	if config.Listen == "" {
+		config.Listen = ":8080"
 	}
 
 	// Validate configuration
@@ -180,8 +180,8 @@ func main() {
 	// Start Prometheus HTTP server
 	http.Handle("/metrics", promhttp.Handler())
 	go func() {
-		log.Println("Starting Prometheus exporter on :8080/metrics")
-		if err := http.ListenAndServe(":8080", nil); err != nil {
+		log.Printf("Starting Prometheus exporter on %s/metrics", config.Listen)
+		if err := http.ListenAndServe(config.Listen, nil); err != nil {
 			log.Fatalf("HTTP server error: %v", err)
 		}
 	}()

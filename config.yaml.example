@@ -1,6 +1,6 @@
 ---
+listen: ":8080"
 address: "192.168.1.1"
 username: "admin"
 password: "admin"
-poll_rate_seconds: 10
 timeout_seconds: 5
