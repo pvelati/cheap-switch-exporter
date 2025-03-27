@@ -61,11 +61,12 @@ docker run -v "./config.yaml:/config.yaml" -p 8080:8080 cheap-switch-exporter
 Create a `config.yaml` with the following structure:
 
 ```yaml
+listen: ":8080"                  # IP and port to listen on.
 address: "192.168.1.1"           # IP or hostname of the switch
 username: "admin"                # Web interface username
 password: "password"             # Web interface password
-poll_rate_seconds: 10            # Metrics polling interval
 timeout_seconds: 5               # Request timeout
+stp: true                        # Enable STP port merics
 ```
 
 ## 📊 Exposed Metrics
@@ -76,6 +77,11 @@ timeout_seconds: 5               # Request timeout
 - `port_tx_bad_pkt`: Transmitted bad packets
 - `port_rx_good_pkt`: Received good packets
 - `port_rx_bad_pkt`: Received bad packets
+
+If STP metrics collection is enabled:
+
+- `port_rstp_cost`: RSTP path cost of the port
+- `port_rstp_state`: RSTP state of the port (0=Disabled, 1=Blocking, 2=Forwarding)
 
 ## 🤝 Contributing
 

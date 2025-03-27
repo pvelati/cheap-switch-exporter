@@ -28,6 +28,7 @@ type Config struct {
 	Username string `yaml:"username"`
 	Password string `yaml:"password"`
 	Timeout  int    `yaml:"timeout_seconds"`
+	STP      bool   `yaml:"stp"`
 }
 
 type Port struct {
@@ -44,6 +45,17 @@ type PortStatistics struct {
 	Ports []Port `json:"port_statistics"`
 }
 
+type STPPort struct {
+	Name     string `json:"port"`
+	State    string `json:"state"`
+	Role     string `json:"role"`
+	PathCost int    `json:"path_cost"`
+}
+
+type STPPortStatistics struct {
+	Ports []STPPort `json:"stp_port_statistics"`
+}
+
 type PortStatsCollector struct {
 	config             Config
 	portState          *prometheus.Desc
@@ -55,6 +67,39 @@ type PortStatsCollector struct {
 	lastScrapeDuration prometheus.Gauge
 	scrapeErrorsTotal  prometheus.Counter
 	mutex              sync.Mutex
+}
+
+type STPPortStatsCollector struct {
+	config             Config
+	portRSTPState      *prometheus.Desc
+	portRSTPCost       *prometheus.Desc
+	lastScrapeDuration prometheus.Gauge
+	scrapeErrorsTotal  prometheus.Counter
+	mutex              sync.Mutex
+}
+
+func NewSTPPortStatsCollector(config Config) *STPPortStatsCollector {
+	return &STPPortStatsCollector{
+		config: config,
+		portRSTPState: prometheus.NewDesc(
+			"port_rstp_state",
+			"RSTP state of the port (0=Disabled, 1=Blocking, 2=Forwarding)",
+			[]string{"port", "role"}, nil,
+		),
+		portRSTPCost: prometheus.NewDesc(
+			"port_rstp_cost",
+			"RSTP path cost of the port",
+			[]string{"port", "role"}, nil,
+		),
+		lastScrapeDuration: promauto.NewGauge(prometheus.GaugeOpts{
+			Name: "exporter_stp_last_scrape_duration_seconds",
+			Help: "Duration of the last scrape",
+		}),
+		scrapeErrorsTotal: promauto.NewCounter(prometheus.CounterOpts{
+			Name: "exporter_stp_scrape_errors_total",
+			Help: "Total number of scrape errors",
+		}),
+	}
 }
 
 func NewPortStatsCollector(config Config) *PortStatsCollector {
@@ -110,6 +155,11 @@ func (c *PortStatsCollector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.portRxBadPkt
 }
 
+func (c *STPPortStatsCollector) Describe(ch chan<- *prometheus.Desc) {
+	ch <- c.portRSTPState
+	ch <- c.portRSTPCost
+}
+
 func (c *PortStatsCollector) Collect(ch chan<- prometheus.Metric) {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
@@ -153,6 +203,50 @@ func (c *PortStatsCollector) Collect(ch chan<- prometheus.Metric) {
 	c.lastScrapeDuration.Set(duration)
 }
 
+func (c *STPPortStatsCollector) Collect(ch chan<- prometheus.Metric) {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+
+	start := time.Now()
+	stats, err := fetchSTPPortStatistics(c.config)
+	if err != nil {
+		c.scrapeErrorsTotal.Inc()
+		log.Printf("Error fetching STP port statistics: %v", err)
+		return
+	}
+
+	for _, port := range stats.Ports {
+		var stateVal float64
+		switch port.State {
+		case "Disabled":
+			stateVal = 0
+		case "Blocking":
+			stateVal = 1
+		case "Forwarding":
+			stateVal = 2
+		default:
+			stateVal = -1
+		}
+
+		ch <- prometheus.MustNewConstMetric(
+			c.portRSTPState,
+			prometheus.GaugeValue,
+			stateVal,
+			port.Name, port.Role,
+		)
+
+		ch <- prometheus.MustNewConstMetric(
+			c.portRSTPCost,
+			prometheus.GaugeValue,
+			float64(port.PathCost),
+			port.Name, port.Role,
+		)
+	}
+
+	duration := time.Since(start).Seconds()
+	c.lastScrapeDuration.Set(duration)
+}
+
 func main() {
 	// Read configuration
 	config, err := readConfig("config.yaml")
@@ -177,6 +271,11 @@ func main() {
 	collector := NewPortStatsCollector(config)
 	prometheus.MustRegister(collector)
 
+	if config.STP {
+		stpCollector := NewSTPPortStatsCollector(config)
+		prometheus.MustRegister(stpCollector)
+	}
+
 	// Start Prometheus HTTP server
 	http.Handle("/metrics", promhttp.Handler())
 	go func() {
@@ -194,10 +293,18 @@ func main() {
 	log.Println("Shutting down...")
 }
 
-func fetchPortStatistics(config Config) (PortStatistics, error) {
-	baseURL := "http://" + config.Address + "/port.cgi"
-	params := url.Values{}
-	params.Set("page", "stats")
+func makeRequest(config Config, path string) (*http.Response, error) {
+	base, err := url.Parse("http://" + config.Address)
+	if err != nil {
+		return nil, fmt.Errorf("invalid base URL: %w", err)
+	}
+
+	rel, err := url.Parse(path)
+	if err != nil {
+		return nil, fmt.Errorf("invalid path: %w", err)
+	}
+
+	fullURL := base.ResolveReference(rel)
 
 	formParams := url.Values{}
 	formParams.Set("username", config.Username)
@@ -209,17 +316,35 @@ func fetchPortStatistics(config Config) (PortStatistics, error) {
 		Timeout: time.Duration(config.Timeout) * time.Second,
 	}
 
-	req, err := http.NewRequest("GET", baseURL, strings.NewReader(formParams.Encode()))
+	req, err := http.NewRequest("GET", fullURL.String(), strings.NewReader(formParams.Encode()))
 	if err != nil {
-		return PortStatistics{}, fmt.Errorf("error creating request: %w", err)
+		return nil, fmt.Errorf("error creating request: %w", err)
 	}
 
 	cookieValue := getMD5Hash(config.Username + config.Password)
 	req.AddCookie(&http.Cookie{Name: "admin", Value: cookieValue})
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.URL.RawQuery = params.Encode()
-
 	resp, err := client.Do(req)
+	return resp, err
+}
+
+func fetchSTPPortStatistics(config Config) (STPPortStatistics, error) {
+	resp, err := makeRequest(config, "/loop.cgi?page=stp_port")
+	if err != nil {
+		return STPPortStatistics{}, fmt.Errorf("error sending STP request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	doc, err := goquery.NewDocumentFromReader(resp.Body)
+	if err != nil {
+		return STPPortStatistics{}, fmt.Errorf("error parsing STP HTML: %w", err)
+	}
+
+	return parseSTPPortStatistics(doc)
+}
+
+func fetchPortStatistics(config Config) (PortStatistics, error) {
+	resp, err := makeRequest(config, "/port.cgi?page=stats")
 	if err != nil {
 		return PortStatistics{}, fmt.Errorf("error sending request: %w", err)
 	}
@@ -255,6 +380,31 @@ func parsePortStatistics(doc *goquery.Document) (PortStatistics, error) {
 					port.RxGoodPkt, _ = strconv.Atoi(strings.TrimSpace(td.Text()))
 				case 6:
 					port.RxBadPkt, _ = strconv.Atoi(strings.TrimSpace(td.Text()))
+				}
+			})
+			stats.Ports = append(stats.Ports, port)
+		}
+	})
+
+	return stats, nil
+}
+
+func parseSTPPortStatistics(doc *goquery.Document) (STPPortStatistics, error) {
+	var stats STPPortStatistics
+
+	doc.Find("table tr").Each(func(i int, s *goquery.Selection) {
+		if i > 3 {
+			port := STPPort{}
+			s.Find("td").Each(func(j int, td *goquery.Selection) {
+				switch j {
+				case 0:
+					port.Name = td.Text()
+				case 1:
+					port.State = td.Text()
+				case 2:
+					port.Role = td.Text()
+				case 4:
+					port.PathCost, _ = strconv.Atoi(strings.TrimSpace(td.Text()))
 				}
 			})
 			stats.Ports = append(stats.Ports, port)
