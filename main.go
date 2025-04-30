@@ -3,8 +3,11 @@ package main
 import (
 	"crypto/md5"
 	"encoding/hex"
+	"flag"
 	"fmt"
+	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -247,25 +250,66 @@ func (c *STPPortStatsCollector) Collect(ch chan<- prometheus.Metric) {
 	c.lastScrapeDuration.Set(duration)
 }
 
-func main() {
-	// Read configuration
-	config, err := readConfig("config.yaml")
+func performHealthCheck(host, port string) {
+	if host == "0.0.0.0" {
+		host = "127.0.0.1"
+	}
+
+	targetURL := fmt.Sprintf("http://%s:%s/metrics", host, port)
+
+	client := http.Client{
+		Timeout: 10 * time.Second,
+	}
+
+	resp, err := client.Get(targetURL)
 	if err != nil {
-		log.Fatalf("Error reading configuration: %v", err)
+		log.Printf("Health check failed: Error connecting to %s: %v", targetURL, err)
+		os.Exit(1)
+	}
+	defer resp.Body.Close()
+
+	_, _ = io.Copy(io.Discard, resp.Body)
+
+	if resp.StatusCode != http.StatusOK {
+		log.Printf("Health check failed: Received non-OK status code %d from %s", resp.StatusCode, targetURL)
+		os.Exit(1)
+	}
+	os.Exit(0)
+}
+
+func main() {
+	configFile := flag.String("config.file", "config.yaml", "Path to configuration file.")
+	healthcheck := flag.Bool("healthcheck", false, "Perform a health check against the configured listen address and exit.")
+	flag.Parse()
+
+	config, err := readConfig(*configFile)
+	if err != nil {
+		log.Fatalf("Fatal: Error reading configuration from %s: %v", *configFile, err)
 	}
 
 	// Set default values if not specified
 	if config.Timeout == 0 {
-		config.Timeout = 5 // Default 5 seconds
+		config.Timeout = 5
 	}
 	if config.Listen == "" {
 		config.Listen = ":8080"
 	}
 
-	// Validate configuration
 	if config.Address == "" || config.Username == "" || config.Password == "" {
 		log.Fatal("Missing required configuration fields")
 	}
+
+	host, port, err := net.SplitHostPort(config.Listen)
+	if err != nil {
+		log.Fatalf("Invalid listen address '%s' used: %v", config.Listen, err)
+	}
+
+	if *healthcheck {
+		performHealthCheck(host, port)
+		return
+	}
+
+	log.Printf("Configuration read successfully from %s", *configFile)
 
 	// Create custom collector
 	collector := NewPortStatsCollector(config)

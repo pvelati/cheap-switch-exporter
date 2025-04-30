@@ -22,3 +22,10 @@ go.work
 
 ## exporter-config-file
 config.yaml
+
+# .docker-built flag
+.docker-built
+
+# Possibly built binary
+cheap-switch-exporter
+

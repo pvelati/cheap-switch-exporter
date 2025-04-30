@@ -50,10 +50,13 @@ go run main.go
 
 ```bash
 # Build Docker image
-docker build -t cheap-switch-exporter .
+$ make docker-image
 
-# Run container
-docker run -v "./config.yaml:/config.yaml" -p 8080:8080 cheap-switch-exporter
+# (Optionally tag the built image with :latest)
+$ make docker-tag-latest
+
+# Run container (as unprivileged user 1234)
+$ docker run --rm -u 1234 -v "./config.yaml:/config.yaml" -p 8080:8080 madworx/cheap-switch-exporter
 ```
 
 ## 📝 Configuration
