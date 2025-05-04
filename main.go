@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -41,6 +42,7 @@ func main() {
 
 	http.HandleFunc("/probe", probeHandler(appConfig, metricDescs))
 	http.Handle("/metrics", promhttp.Handler())
+	http.HandleFunc("/targets", targetsHandler(appConfig))
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`<html><head><title>Switch Exporter</title></head><body>
 			<h1>Switch Exporter</h1>
@@ -200,6 +202,39 @@ func probeHandler(appConfig AppConfig, descs *MetricDescriptions) http.HandlerFu
 		})
 		h.ServeHTTP(w, r)
 		log.Printf("Probe for target %s completed in %.2f seconds (Success: %t)", target, duration, success)
+	}
+}
+
+func targetsHandler(appConfig AppConfig) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		targetGroups := make([]HttpSdTargetGroup, 0, len(appConfig.TargetsMap))
+
+		for address, switchCfg := range appConfig.TargetsMap {
+			labels := map[string]string{
+				"__meta_switch_address": address,
+				"switch_name":           switchCfg.Name,
+				"job":                   "cheap-switch-exporter",
+			}
+
+			tg := HttpSdTargetGroup{
+				Targets: []string{address},
+				Labels:  labels,
+			}
+			targetGroups = append(targetGroups, tg)
+		}
+
+		jsonData, err := json.MarshalIndent(targetGroups, "", "  ")
+		if err != nil {
+			log.Printf("Error marshaling targets for HTTP SD: %v", err)
+			http.Error(w, "Error generating target list", http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_, err = w.Write(jsonData)
+		if err != nil {
+			log.Printf("Error writing HTTP SD response: %v", err)
+		}
 	}
 }
 

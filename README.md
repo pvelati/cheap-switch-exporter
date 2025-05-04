@@ -53,7 +53,7 @@ go run main.go
 $ make docker-image
 
 # (Optionally tag the built image with :latest)
-$ make docker-tag-latest
+$ make docker-image-tag-latest
 
 # Run container (as unprivileged user 1234)
 $ docker run --rm -u 1234 -v "./config.yaml:/config.yaml" -p 8080:8080 madworx/cheap-switch-exporter

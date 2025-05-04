@@ -15,7 +15,7 @@ cheap-switch-exporter: $(DEPS) ## Build the cheap-switch-exporter binary locally
 
 docker-image: .docker-built ## Build the docker image
 
-docker-tag-latest: .docker-built ## Tag the docker image as latest
+docker-image-tag-latest: .docker-built ## Tag the docker image as latest
 	docker tag $(IMAGE) $(IMAGE_BASE):latest
 
 clean: ## Clean up the build artifacts

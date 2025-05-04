@@ -167,3 +167,9 @@ var (
 		[]string{"target"},
 	)
 )
+
+// Structure for Prometheus HTTP SD targets
+type HttpSdTargetGroup struct {
+	Targets []string          `json:"targets"`
+	Labels  map[string]string `json:"labels"`
+}
