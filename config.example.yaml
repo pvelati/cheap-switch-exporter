@@ -1,0 +1,23 @@
+listen: ":8080"
+default_timeout_seconds: 15 # Probes will time out after 15s unless overridden
+
+targets:
+  - name: "Access Switch Floor 1" # Optional name
+    address: "192.168.1.1"        # Required - Prometheus uses this in ?target=
+    username: "admin"             # Required
+    password: "password123"       # Required
+    timeout_seconds: 10           # Optional - Override default timeout for this switch
+    stp: true                     # Optional - Scrape STP metrics for this switch (default false)
+
+  - name: "Access Switch Floor 2"
+    address: "192.168.2.10"
+    username: "monitor"
+    password: "anotherPassword!"
+    # timeout_seconds: Uses default (15s)
+    stp: false # Default, can be omitted
+
+  - address: "192.168.1.2" # Minimum required fields
+    username: "admin"
+    password: "password456"
+
+# Add more targets as needed

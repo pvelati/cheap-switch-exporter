@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context" // Added import
 	"crypto/md5"
 	"encoding/hex"
 	"flag"
@@ -13,8 +14,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
-	"strings"
-	"sync"
+	"strings" // Keep sync import for potential future use, though not strictly needed now
 	"syscall"
 	"time"
 
@@ -25,14 +25,25 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-type Config struct {
-	Listen   string `yaml:"listen"`
-	Address  string `yaml:"address"`
-	Username string `yaml:"username"`
-	Password string `yaml:"password"`
-	Timeout  int    `yaml:"timeout_seconds"`
-	STP      bool   `yaml:"stp"`
+// --- Configuration Structures (Unchanged) ---
+
+type SwitchConfig struct {
+	Name           string `yaml:"name"`
+	Address        string `yaml:"address"`
+	Username       string `yaml:"username"`
+	Password       string `yaml:"password"`
+	TimeoutSeconds int    `yaml:"timeout_seconds"`
+	STP            bool   `yaml:"stp"`
 }
+
+type AppConfig struct {
+	Listen                string                  `yaml:"listen"`
+	DefaultTimeoutSeconds int                     `yaml:"default_timeout_seconds"`
+	Targets               []SwitchConfig          `yaml:"targets"`
+	TargetsMap            map[string]SwitchConfig `yaml:"-"` // Ignore during YAML unmarshal
+}
+
+// --- Data Structures for Parsing (Unchanged) ---
 
 type Port struct {
 	Name       string `json:"port"`
@@ -59,293 +70,268 @@ type STPPortStatistics struct {
 	Ports []STPPort `json:"stp_port_statistics"`
 }
 
-type PortStatsCollector struct {
-	config             Config
-	portState          *prometheus.Desc
-	portLinkStatus     *prometheus.Desc
-	portTxGoodPkt      *prometheus.Desc
-	portTxBadPkt       *prometheus.Desc
-	portRxGoodPkt      *prometheus.Desc
-	portRxBadPkt       *prometheus.Desc
-	lastScrapeDuration prometheus.Gauge
-	scrapeErrorsTotal  prometheus.Counter
-	mutex              sync.Mutex
+// --- Prometheus Metric Descriptions (Unchanged) ---
+
+type MetricDescriptions struct {
+	probeSuccess         *prometheus.Desc
+	probeDurationSeconds *prometheus.Desc
+	portState            *prometheus.Desc
+	portLinkStatus       *prometheus.Desc
+	portTxGoodPkt        *prometheus.Desc
+	portTxBadPkt         *prometheus.Desc
+	portRxGoodPkt        *prometheus.Desc
+	portRxBadPkt         *prometheus.Desc
+	portRSTPState        *prometheus.Desc
+	portRSTPCost         *prometheus.Desc
 }
 
-type STPPortStatsCollector struct {
-	config             Config
-	portRSTPState      *prometheus.Desc
-	portRSTPCost       *prometheus.Desc
-	lastScrapeDuration prometheus.Gauge
-	scrapeErrorsTotal  prometheus.Counter
-	mutex              sync.Mutex
-}
+func newMetricDescriptions() *MetricDescriptions {
+	targetLabel := "target"
+	portLabel := "port"
+	roleLabel := "role"
 
-func NewSTPPortStatsCollector(config Config) *STPPortStatsCollector {
-	return &STPPortStatsCollector{
-		config: config,
-		portRSTPState: prometheus.NewDesc(
-			"port_rstp_state",
-			"RSTP state of the port (0=Disabled, 1=Blocking, 2=Forwarding)",
-			[]string{"port", "role"}, nil,
+	return &MetricDescriptions{
+		probeSuccess: prometheus.NewDesc(
+			"probe_success",
+			"Displays whether or not the probe was a success",
+			[]string{targetLabel}, nil,
 		),
-		portRSTPCost: prometheus.NewDesc(
-			"port_rstp_cost",
-			"RSTP path cost of the port",
-			[]string{"port", "role"}, nil,
+		probeDurationSeconds: prometheus.NewDesc(
+			"probe_duration_seconds",
+			"Returns how long the probe took to complete in seconds",
+			[]string{targetLabel}, nil,
 		),
-		lastScrapeDuration: promauto.NewGauge(prometheus.GaugeOpts{
-			Name: "exporter_stp_last_scrape_duration_seconds",
-			Help: "Duration of the last scrape",
-		}),
-		scrapeErrorsTotal: promauto.NewCounter(prometheus.CounterOpts{
-			Name: "exporter_stp_scrape_errors_total",
-			Help: "Total number of scrape errors",
-		}),
-	}
-}
-
-func NewPortStatsCollector(config Config) *PortStatsCollector {
-	return &PortStatsCollector{
-		config: config,
 		portState: prometheus.NewDesc(
-			"port_state",
-			"State of the port",
-			[]string{"port"}, nil,
+			"switch_port_state",
+			"State of the port (1=Enable, 0=Disable)",
+			[]string{portLabel, targetLabel}, nil,
 		),
 		portLinkStatus: prometheus.NewDesc(
-			"port_link_status",
-			"Link status of the port",
-			[]string{"port"}, nil,
+			"switch_port_link_status",
+			"Link status of the port (1=Up, 0=Down)",
+			[]string{portLabel, targetLabel}, nil,
 		),
 		portTxGoodPkt: prometheus.NewDesc(
-			"port_tx_good_pkt",
+			"switch_port_transmit_packets_good_total",
 			"Number of good packets transmitted on the port",
-			[]string{"port"}, nil,
+			[]string{portLabel, targetLabel}, nil,
 		),
 		portTxBadPkt: prometheus.NewDesc(
-			"port_tx_bad_pkt",
+			"switch_port_transmit_packets_bad_total",
 			"Number of bad packets transmitted on the port",
-			[]string{"port"}, nil,
+			[]string{portLabel, targetLabel}, nil,
 		),
 		portRxGoodPkt: prometheus.NewDesc(
-			"port_rx_good_pkt",
+			"switch_port_receive_packets_good_total",
 			"Number of good packets received on the port",
-			[]string{"port"}, nil,
+			[]string{portLabel, targetLabel}, nil,
 		),
 		portRxBadPkt: prometheus.NewDesc(
-			"port_rx_bad_pkt",
+			"switch_port_receive_packets_bad_total",
 			"Number of bad packets received on the port",
-			[]string{"port"}, nil,
+			[]string{portLabel, targetLabel}, nil,
 		),
-		lastScrapeDuration: promauto.NewGauge(prometheus.GaugeOpts{
-			Name: "exporter_last_scrape_duration_seconds",
-			Help: "Duration of the last scrape",
-		}),
-		scrapeErrorsTotal: promauto.NewCounter(prometheus.CounterOpts{
-			Name: "exporter_scrape_errors_total",
-			Help: "Total number of scrape errors",
-		}),
+		portRSTPState: prometheus.NewDesc(
+			"switch_port_rstp_state",
+			"RSTP state of the port (0=Disabled, 1=Blocking, 2=Forwarding)",
+			[]string{portLabel, roleLabel, targetLabel}, nil,
+		),
+		portRSTPCost: prometheus.NewDesc(
+			"switch_port_rstp_path_cost",
+			"RSTP path cost of the port",
+			[]string{portLabel, roleLabel, targetLabel}, nil,
+		),
 	}
 }
 
-func (c *PortStatsCollector) Describe(ch chan<- *prometheus.Desc) {
-	ch <- c.portState
-	ch <- c.portLinkStatus
-	ch <- c.portTxGoodPkt
-	ch <- c.portTxBadPkt
-	ch <- c.portRxGoodPkt
-	ch <- c.portRxBadPkt
+// --- Global Metrics for Exporter Itself (Unchanged) ---
+
+var (
+	probeErrorsTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "switch_exporter_probe_errors_total",
+			Help: "Total number of errors encountered during probes, per target.",
+		},
+		[]string{"target"},
+	)
+)
+
+// --- Temporary Collector for On-Demand Scrapes ---
+
+type switchScrapeCollector struct {
+	targetLabelValue string
+	descs            *MetricDescriptions
+	portStats        *PortStatistics    // Pointer to allow nil if fetch fails
+	stpStats         *STPPortStatistics // Pointer to allow nil if fetch fails or not enabled
+	probeDuration    float64
+	probeSuccess     bool
 }
 
-func (c *STPPortStatsCollector) Describe(ch chan<- *prometheus.Desc) {
-	ch <- c.portRSTPState
-	ch <- c.portRSTPCost
+// Describe implements prometheus.Collector.
+func (sc *switchScrapeCollector) Describe(ch chan<- *prometheus.Desc) {
+	ch <- sc.descs.probeSuccess
+	ch <- sc.descs.probeDurationSeconds
+	ch <- sc.descs.portState
+	ch <- sc.descs.portLinkStatus
+	ch <- sc.descs.portTxGoodPkt
+	ch <- sc.descs.portTxBadPkt
+	ch <- sc.descs.portRxGoodPkt
+	ch <- sc.descs.portRxBadPkt
+	ch <- sc.descs.portRSTPState
+	ch <- sc.descs.portRSTPCost
 }
 
-func (c *PortStatsCollector) Collect(ch chan<- prometheus.Metric) {
-	c.mutex.Lock()
-	defer c.mutex.Unlock()
+// Collect implements prometheus.Collector.
+func (sc *switchScrapeCollector) Collect(ch chan<- prometheus.Metric) {
+	// Report probe success and duration first
+	successValue := 0.0
+	if sc.probeSuccess {
+		successValue = 1.0
+	}
+	ch <- prometheus.MustNewConstMetric(sc.descs.probeSuccess, prometheus.GaugeValue, successValue, sc.targetLabelValue)
+	ch <- prometheus.MustNewConstMetric(sc.descs.probeDurationSeconds, prometheus.GaugeValue, sc.probeDuration, sc.targetLabelValue)
 
-	start := time.Now()
-	stats, err := fetchPortStatistics(c.config)
-	if err != nil {
-		c.scrapeErrorsTotal.Inc()
-		log.Printf("Error fetching port statistics: %v", err)
+	// Only report device metrics if the probe was successful overall
+	// (Alternatively, you could report partial data even on probe failure, adjust logic as needed)
+	if !sc.probeSuccess {
 		return
 	}
 
-	for _, port := range stats.Ports {
-		ch <- prometheus.MustNewConstMetric(
-			c.portState, prometheus.GaugeValue,
-			stateToFloat(port.State), port.Name,
-		)
-		ch <- prometheus.MustNewConstMetric(
-			c.portLinkStatus, prometheus.GaugeValue,
-			linkStatusToFloat(port.LinkStatus), port.Name,
-		)
-		ch <- prometheus.MustNewConstMetric(
-			c.portTxGoodPkt, prometheus.GaugeValue,
-			float64(port.TxGoodPkt), port.Name,
-		)
-		ch <- prometheus.MustNewConstMetric(
-			c.portTxBadPkt, prometheus.GaugeValue,
-			float64(port.TxBadPkt), port.Name,
-		)
-		ch <- prometheus.MustNewConstMetric(
-			c.portRxGoodPkt, prometheus.GaugeValue,
-			float64(port.RxGoodPkt), port.Name,
-		)
-		ch <- prometheus.MustNewConstMetric(
-			c.portRxBadPkt, prometheus.GaugeValue,
-			float64(port.RxBadPkt), port.Name,
-		)
-	}
-
-	duration := time.Since(start).Seconds()
-	c.lastScrapeDuration.Set(duration)
-}
-
-func (c *STPPortStatsCollector) Collect(ch chan<- prometheus.Metric) {
-	c.mutex.Lock()
-	defer c.mutex.Unlock()
-
-	start := time.Now()
-	stats, err := fetchSTPPortStatistics(c.config)
-	if err != nil {
-		c.scrapeErrorsTotal.Inc()
-		log.Printf("Error fetching STP port statistics: %v", err)
-		return
-	}
-
-	for _, port := range stats.Ports {
-		var stateVal float64
-		switch port.State {
-		case "Disabled":
-			stateVal = 0
-		case "Blocking":
-			stateVal = 1
-		case "Forwarding":
-			stateVal = 2
-		default:
-			stateVal = -1
+	// --- Collect Port Statistics ---
+	if sc.portStats != nil {
+		for _, port := range sc.portStats.Ports {
+			ch <- prometheus.MustNewConstMetric(
+				sc.descs.portState, prometheus.GaugeValue,
+				stateToFloat(port.State), port.Name, sc.targetLabelValue,
+			)
+			ch <- prometheus.MustNewConstMetric(
+				sc.descs.portLinkStatus, prometheus.GaugeValue,
+				linkStatusToFloat(port.LinkStatus), port.Name, sc.targetLabelValue,
+			)
+			ch <- prometheus.MustNewConstMetric(
+				sc.descs.portTxGoodPkt, prometheus.CounterValue,
+				float64(port.TxGoodPkt), port.Name, sc.targetLabelValue,
+			)
+			ch <- prometheus.MustNewConstMetric(
+				sc.descs.portTxBadPkt, prometheus.CounterValue,
+				float64(port.TxBadPkt), port.Name, sc.targetLabelValue,
+			)
+			ch <- prometheus.MustNewConstMetric(
+				sc.descs.portRxGoodPkt, prometheus.CounterValue,
+				float64(port.RxGoodPkt), port.Name, sc.targetLabelValue,
+			)
+			ch <- prometheus.MustNewConstMetric(
+				sc.descs.portRxBadPkt, prometheus.CounterValue,
+				float64(port.RxBadPkt), port.Name, sc.targetLabelValue,
+			)
 		}
-
-		ch <- prometheus.MustNewConstMetric(
-			c.portRSTPState,
-			prometheus.GaugeValue,
-			stateVal,
-			port.Name, port.Role,
-		)
-
-		ch <- prometheus.MustNewConstMetric(
-			c.portRSTPCost,
-			prometheus.GaugeValue,
-			float64(port.PathCost),
-			port.Name, port.Role,
-		)
 	}
 
-	duration := time.Since(start).Seconds()
-	c.lastScrapeDuration.Set(duration)
+	// --- Collect STP Statistics ---
+	if sc.stpStats != nil {
+		for _, port := range sc.stpStats.Ports {
+			var stateVal float64
+			switch port.State {
+			case "Disabled":
+				stateVal = 0
+			case "Blocking":
+				stateVal = 1
+			case "Forwarding":
+				stateVal = 2
+			default:
+				stateVal = -1
+			}
+
+			ch <- prometheus.MustNewConstMetric(
+				sc.descs.portRSTPState, prometheus.GaugeValue,
+				stateVal, port.Name, port.Role, sc.targetLabelValue,
+			)
+			ch <- prometheus.MustNewConstMetric(
+				sc.descs.portRSTPCost, prometheus.GaugeValue,
+				float64(port.PathCost), port.Name, port.Role, sc.targetLabelValue,
+			)
+		}
+	}
 }
 
-func performHealthCheck(host, port string) {
-	if host == "0.0.0.0" {
-		host = "127.0.0.1"
-	}
+// --- Core Logic (fetch*, parse*, readConfig, makeRequest are mostly unchanged) ---
 
-	targetURL := fmt.Sprintf("http://%s:%s/metrics", host, port)
+func readConfig(filename string) (AppConfig, error) {
+	var config AppConfig
+	config.TargetsMap = make(map[string]SwitchConfig) // Initialize the map
 
-	client := http.Client{
-		Timeout: 10 * time.Second,
-	}
-
-	resp, err := client.Get(targetURL)
+	data, err := os.ReadFile(filename)
 	if err != nil {
-		log.Printf("Health check failed: Error connecting to %s: %v", targetURL, err)
-		os.Exit(1)
+		return config, fmt.Errorf("failed to read config file %s: %w", filename, err)
 	}
-	defer resp.Body.Close()
 
-	_, _ = io.Copy(io.Discard, resp.Body)
-
-	if resp.StatusCode != http.StatusOK {
-		log.Printf("Health check failed: Received non-OK status code %d from %s", resp.StatusCode, targetURL)
-		os.Exit(1)
-	}
-	os.Exit(0)
-}
-
-func main() {
-	configFile := flag.String("config.file", "config.yaml", "Path to configuration file.")
-	healthcheck := flag.Bool("healthcheck", false, "Perform a health check against the configured listen address and exit.")
-	flag.Parse()
-
-	config, err := readConfig(*configFile)
+	err = yaml.Unmarshal(data, &config)
 	if err != nil {
-		log.Fatalf("Fatal: Error reading configuration from %s: %v", *configFile, err)
+		return config, fmt.Errorf("failed to unmarshal config YAML: %w", err)
 	}
 
-	// Set default values if not specified
-	if config.Timeout == 0 {
-		config.Timeout = 5
+	// Set defaults and validate targets
+	if config.DefaultTimeoutSeconds <= 0 {
+		config.DefaultTimeoutSeconds = 10
 	}
 	if config.Listen == "" {
 		config.Listen = ":8080"
 	}
-
-	if config.Address == "" || config.Username == "" || config.Password == "" {
-		log.Fatal("Missing required configuration fields")
+	if len(config.Targets) == 0 {
+		return config, fmt.Errorf("no targets defined in configuration")
 	}
 
-	host, port, err := net.SplitHostPort(config.Listen)
-	if err != nil {
-		log.Fatalf("Invalid listen address '%s' used: %v", config.Listen, err)
-	}
+	validTargets := make([]SwitchConfig, 0, len(config.Targets))
+	for i := range config.Targets { // Iterate using index to modify original slice elements if needed
+		target := &config.Targets[i] // Use pointer for potential modifications
 
-	if *healthcheck {
-		performHealthCheck(host, port)
-		return
-	}
-
-	log.Printf("Configuration read successfully from %s", *configFile)
-
-	// Create custom collector
-	collector := NewPortStatsCollector(config)
-	prometheus.MustRegister(collector)
-
-	if config.STP {
-		stpCollector := NewSTPPortStatsCollector(config)
-		prometheus.MustRegister(stpCollector)
-	}
-
-	// Start Prometheus HTTP server
-	http.Handle("/metrics", promhttp.Handler())
-	go func() {
-		log.Printf("Starting Prometheus exporter on %s/metrics", config.Listen)
-		if err := http.ListenAndServe(config.Listen, nil); err != nil {
-			log.Fatalf("HTTP server error: %v", err)
+		if target.Address == "" {
+			log.Printf("Warning: Skipping target entry %d: missing required 'address' field", i)
+			continue // Skip this invalid target
 		}
-	}()
+		if target.Username == "" {
+			log.Printf("Warning: Skipping target '%s' (%s): missing required 'username' field", target.Name, target.Address)
+			continue
+		}
+		if target.Password == "" {
+			log.Printf("Warning: Skipping target '%s' (%s): missing required 'password' field", target.Name, target.Address)
+			continue
+		}
 
-	// Graceful shutdown handling
-	stop := make(chan os.Signal, 1)
-	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
+		// Use default timeout if target-specific one isn't set or invalid
+		if target.TimeoutSeconds <= 0 {
+			target.TimeoutSeconds = config.DefaultTimeoutSeconds
+		}
 
-	<-stop
-	log.Println("Shutting down...")
+		// Populate the map for quick lookup
+		if _, exists := config.TargetsMap[target.Address]; exists {
+			log.Printf("Warning: Duplicate target address '%s' found in config. Last definition will be used.", target.Address)
+		}
+		config.TargetsMap[target.Address] = *target  // Add the validated/updated target to the map
+		validTargets = append(validTargets, *target) // Add to a new list of only valid targets
+	}
+	config.Targets = validTargets // Replace original targets with only the valid ones
+
+	if len(config.TargetsMap) == 0 {
+		return config, fmt.Errorf("no valid targets found in configuration after validation")
+	}
+
+	return config, nil
 }
 
-func makeRequest(config Config, path string) (*http.Response, error) {
+// makeRequest, fetchPortStatistics, fetchSTPPortStatistics,
+// parsePortStatistics, parseSTPPortStatistics remain the same as in the previous corrected version
+// (Ensure they log errors with target identifiers)
+// ... (insert the unchanged functions here for completeness) ...
+func makeRequest(config SwitchConfig, path string) (*http.Response, error) {
 	base, err := url.Parse("http://" + config.Address)
 	if err != nil {
-		return nil, fmt.Errorf("invalid base URL: %w", err)
+		return nil, fmt.Errorf("invalid base URL for target %s: %w", config.Address, err)
 	}
 
 	rel, err := url.Parse(path)
 	if err != nil {
-		return nil, fmt.Errorf("invalid path: %w", err)
+		return nil, fmt.Errorf("invalid path for target %s: %w", config.Address, err)
 	}
 
 	fullURL := base.ResolveReference(rel)
@@ -357,119 +343,273 @@ func makeRequest(config Config, path string) (*http.Response, error) {
 	formParams.Set("Response", getMD5Hash(config.Username+config.Password))
 
 	client := &http.Client{
-		Timeout: time.Duration(config.Timeout) * time.Second,
+		Timeout: time.Duration(config.TimeoutSeconds) * time.Second, // Use effective timeout
 	}
 
 	req, err := http.NewRequest("GET", fullURL.String(), strings.NewReader(formParams.Encode()))
 	if err != nil {
-		return nil, fmt.Errorf("error creating request: %w", err)
+		return nil, fmt.Errorf("error creating request for target %s: %w", config.Address, err)
 	}
 
 	cookieValue := getMD5Hash(config.Username + config.Password)
 	req.AddCookie(&http.Cookie{Name: "admin", Value: cookieValue})
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	log.Printf("Probing target %s at path %s", config.Address, path)
 	resp, err := client.Do(req)
-	return resp, err
-}
-
-func fetchSTPPortStatistics(config Config) (STPPortStatistics, error) {
-	resp, err := makeRequest(config, "/loop.cgi?page=stp_port")
 	if err != nil {
-		return STPPortStatistics{}, fmt.Errorf("error sending STP request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	doc, err := goquery.NewDocumentFromReader(resp.Body)
-	if err != nil {
-		return STPPortStatistics{}, fmt.Errorf("error parsing STP HTML: %w", err)
+		return nil, fmt.Errorf("error executing request for target %s: %w", config.Address, err)
 	}
 
-	return parseSTPPortStatistics(doc)
+	return resp, nil
 }
 
-func fetchPortStatistics(config Config) (PortStatistics, error) {
+func fetchPortStatistics(config SwitchConfig) (PortStatistics, error) {
 	resp, err := makeRequest(config, "/port.cgi?page=stats")
 	if err != nil {
-		return PortStatistics{}, fmt.Errorf("error sending request: %w", err)
+		return PortStatistics{}, fmt.Errorf("port stats request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode != http.StatusOK {
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		return PortStatistics{}, fmt.Errorf("port stats request returned non-OK status %d for target %s: %s", resp.StatusCode, config.Address, string(bodyBytes))
+	}
+
 	doc, err := goquery.NewDocumentFromReader(resp.Body)
 	if err != nil {
-		return PortStatistics{}, fmt.Errorf("error parsing HTML: %w", err)
+		return PortStatistics{}, fmt.Errorf("error parsing port stats HTML for target %s: %w", config.Address, err)
 	}
 
 	return parsePortStatistics(doc)
 }
 
+func fetchSTPPortStatistics(config SwitchConfig) (STPPortStatistics, error) {
+	resp, err := makeRequest(config, "/loop.cgi?page=stp_port")
+	if err != nil {
+		return STPPortStatistics{}, fmt.Errorf("STP stats request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		return STPPortStatistics{}, fmt.Errorf("STP stats request returned non-OK status %d for target %s: %s", resp.StatusCode, config.Address, string(bodyBytes))
+	}
+
+	doc, err := goquery.NewDocumentFromReader(resp.Body)
+	if err != nil {
+		return STPPortStatistics{}, fmt.Errorf("error parsing STP stats HTML for target %s: %w", config.Address, err)
+	}
+
+	return parseSTPPortStatistics(doc)
+}
+
 func parsePortStatistics(doc *goquery.Document) (PortStatistics, error) {
 	var stats PortStatistics
+	var parseErrors []string
 
 	doc.Find("table tr").Each(func(i int, s *goquery.Selection) {
+		// Assuming the first row (i=0) is headers
 		if i != 0 {
 			port := Port{}
 			s.Find("td").Each(func(j int, td *goquery.Selection) {
+				text := strings.TrimSpace(td.Text())
+				var err error
 				switch j {
 				case 0:
-					port.Name = td.Text()
+					port.Name = text
 				case 1:
-					port.State = td.Text()
+					port.State = text
 				case 2:
-					port.LinkStatus = td.Text()
+					port.LinkStatus = text
 				case 3:
-					port.TxGoodPkt, _ = strconv.Atoi(strings.TrimSpace(td.Text()))
+					port.TxGoodPkt, err = strconv.Atoi(text)
+					if err != nil {
+						parseErrors = append(parseErrors, fmt.Sprintf("row %d, col %d (TxGoodPkt): %v", i, j, err))
+					}
 				case 4:
-					port.TxBadPkt, _ = strconv.Atoi(strings.TrimSpace(td.Text()))
+					port.TxBadPkt, err = strconv.Atoi(text)
+					if err != nil {
+						parseErrors = append(parseErrors, fmt.Sprintf("row %d, col %d (TxBadPkt): %v", i, j, err))
+					}
 				case 5:
-					port.RxGoodPkt, _ = strconv.Atoi(strings.TrimSpace(td.Text()))
+					port.RxGoodPkt, err = strconv.Atoi(text)
+					if err != nil {
+						parseErrors = append(parseErrors, fmt.Sprintf("row %d, col %d (RxGoodPkt): %v", i, j, err))
+					}
 				case 6:
-					port.RxBadPkt, _ = strconv.Atoi(strings.TrimSpace(td.Text()))
+					port.RxBadPkt, err = strconv.Atoi(text)
+					if err != nil {
+						parseErrors = append(parseErrors, fmt.Sprintf("row %d, col %d (RxBadPkt): %v", i, j, err))
+					}
 				}
 			})
-			stats.Ports = append(stats.Ports, port)
+			// Basic check if we got a port name
+			if port.Name != "" {
+				stats.Ports = append(stats.Ports, port)
+				// Check if the row had any 'td' elements before logging warning
+			} else if s.Find("td").Length() > 0 { // CORRECTED LINE
+				log.Printf("Skipping row %d in port stats table: No port name found.", i)
+			}
 		}
 	})
 
+	if len(parseErrors) > 0 {
+		return stats, fmt.Errorf("parsing port statistics: %s", strings.Join(parseErrors, "; "))
+	}
+	if len(stats.Ports) == 0 && doc.Find("table tr").Length() > 1 { // Check if table had rows beyond header
+		log.Println("Warning: No ports parsed from statistics table, but data rows were present.")
+	}
+	if len(stats.Ports) == 0 && doc.Find("table tr").Length() <= 1 { // Check if only header or empty
+		return stats, fmt.Errorf("no data rows found in port statistics table")
+	}
 	return stats, nil
 }
 
 func parseSTPPortStatistics(doc *goquery.Document) (STPPortStatistics, error) {
 	var stats STPPortStatistics
+	var parseErrors []string
 
 	doc.Find("table tr").Each(func(i int, s *goquery.Selection) {
-		if i > 3 {
+		// Adjust index based on actual HTML structure if needed (e.g., skip multiple header rows)
+		if i > 3 { // Assuming first row (i=0) is header
 			port := STPPort{}
 			s.Find("td").Each(func(j int, td *goquery.Selection) {
+				text := strings.TrimSpace(td.Text())
+				var err error
 				switch j {
 				case 0:
-					port.Name = td.Text()
+					port.Name = text
 				case 1:
-					port.State = td.Text()
+					port.State = text
 				case 2:
-					port.Role = td.Text()
-				case 4:
-					port.PathCost, _ = strconv.Atoi(strings.TrimSpace(td.Text()))
+					port.Role = text
+				case 4: // Assuming Path Cost is the 5th column (index 4)
+					port.PathCost, err = strconv.Atoi(text)
+					if err != nil {
+						parseErrors = append(parseErrors, fmt.Sprintf("row %d, col %d (PathCost): %v", i, j, err))
+					}
 				}
 			})
-			stats.Ports = append(stats.Ports, port)
+			// Basic check if we got a port name
+			if port.Name != "" {
+				stats.Ports = append(stats.Ports, port)
+				// Check if the row had any 'td' elements before logging warning
+			} else if s.Find("td").Length() > 0 { // CORRECTED LINE
+				log.Printf("Skipping row %d in STP stats table: No port name found.", i)
+			}
 		}
 	})
 
+	if len(parseErrors) > 0 {
+		return stats, fmt.Errorf("parsing STP statistics: %s", strings.Join(parseErrors, "; "))
+	}
+	if len(stats.Ports) == 0 && doc.Find("table tr").Length() > 1 { // Check if table had rows beyond header
+		log.Println("Warning: No ports parsed from STP statistics table, but data rows were present.")
+	}
+	if len(stats.Ports) == 0 && doc.Find("table tr").Length() <= 1 { // Check if only header or empty
+		return stats, fmt.Errorf("no data rows found in STP statistics table")
+	}
 	return stats, nil
 }
 
+// --- HTTP Probe Handler ---
+
+func probeHandler(appConfig AppConfig, descs *MetricDescriptions) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		startTime := time.Now()
+
+		target := r.URL.Query().Get("target")
+		if target == "" {
+			http.Error(w, "'target' parameter is missing", http.StatusBadRequest)
+			return
+		}
+
+		switchConfig, found := appConfig.TargetsMap[target]
+		if !found {
+			http.Error(w, fmt.Sprintf("Target '%s' not found in configuration", target), http.StatusNotFound)
+			return
+		}
+
+		// --- Fetch Data ---
+		var portStatsResult *PortStatistics
+		var stpStatsResult *STPPortStatistics
+		var finalError error // Track if any fetch failed
+
+		portStats, errPort := fetchPortStatistics(switchConfig)
+		if errPort != nil {
+			log.Printf("Error fetching port metrics for target %s: %v", target, errPort)
+			finalError = errPort // Record the error
+		} else {
+			portStatsResult = &portStats // Store successful result
+		}
+
+		if switchConfig.STP {
+			stpStats, errSTP := fetchSTPPortStatistics(switchConfig)
+			if errSTP != nil {
+				log.Printf("Error fetching STP metrics for target %s: %v", target, errSTP)
+				if finalError == nil { // Only record if it's the first error
+					finalError = errSTP
+				}
+			} else {
+				stpStatsResult = &stpStats // Store successful result
+			}
+		}
+
+		duration := time.Since(startTime).Seconds()
+		success := finalError == nil
+
+		// --- Create and Register Temporary Collector ---
+		registry := prometheus.NewRegistry()
+		collector := &switchScrapeCollector{
+			targetLabelValue: target,
+			descs:            descs,
+			portStats:        portStatsResult, // Pass potentially nil pointers
+			stpStats:         stpStatsResult,  // Pass potentially nil pointers
+			probeDuration:    duration,
+			probeSuccess:     success,
+		}
+		registry.MustRegister(collector)
+
+		// Update global error counter if probe failed
+		if !success {
+			probeErrorsTotal.WithLabelValues(target).Inc()
+		}
+
+		// --- Serve Metrics ---
+		h := promhttp.HandlerFor(registry, promhttp.HandlerOpts{
+			ErrorLog:      log.New(os.Stderr, "", log.LstdFlags),
+			ErrorHandling: promhttp.ContinueOnError, // Or PanicOnError based on preference
+		})
+		h.ServeHTTP(w, r)
+		log.Printf("Probe for target %s completed in %.2f seconds (Success: %t)", target, duration, success)
+	}
+}
+
+// --- Utility Functions (stateToFloat, linkStatusToFloat, getMD5Hash, performHealthCheck - Unchanged) ---
+// ... (insert the unchanged functions here for completeness) ...
 func stateToFloat(state string) float64 {
-	return map[string]float64{
-		"Enable":  1.0,
-		"Disable": 0.0,
-	}[state]
+	switch strings.ToLower(state) {
+	case "enable":
+		return 1.0
+	case "disable":
+		return 0.0
+	default:
+		log.Printf("Warning: Unknown port state '%s'", state)
+		return -1.0
+	}
 }
 
 func linkStatusToFloat(status string) float64 {
-	return map[string]float64{
-		"Link Up":   1.0,
-		"Link Down": 0.0,
-	}[status]
+	switch strings.ToLower(status) {
+	case "link up":
+		return 1.0
+	case "link down":
+		return 0.0
+	default:
+		log.Printf("Warning: Unknown link status '%s'", status)
+		return -1.0
+	}
 }
 
 func getMD5Hash(text string) string {
@@ -477,18 +617,90 @@ func getMD5Hash(text string) string {
 	return hex.EncodeToString(hash[:])
 }
 
-func readConfig(filename string) (Config, error) {
-	var config Config
-
-	data, err := os.ReadFile(filename)
+func performHealthCheck(listenAddr string) {
+	proto := "http"
+	host, port, err := net.SplitHostPort(listenAddr)
 	if err != nil {
-		return config, err
+		log.Printf("Health check failed: Could not parse listen address '%s': %v", listenAddr, err)
+		os.Exit(1)
+	}
+	if host == "0.0.0.0" || host == "::" {
+		host = "127.0.0.1"
 	}
 
-	err = yaml.Unmarshal(data, &config)
+	targetURL := fmt.Sprintf("%s://%s:%s/metrics", proto, host, port)
+	log.Printf("Performing health check against %s", targetURL)
+
+	client := http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Get(targetURL)
 	if err != nil {
-		return config, err
+		log.Printf("Health check failed: Error connecting to %s: %v", targetURL, err)
+		os.Exit(1)
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, resp.Body)
+
+	if resp.StatusCode != http.StatusOK {
+		log.Printf("Health check failed: Received non-OK status code %d from %s", resp.StatusCode, targetURL)
+		os.Exit(1)
+	}
+	log.Println("Health check successful.")
+	os.Exit(0)
+}
+
+// --- Main Function (Mostly unchanged setup, registers new probeHandler) ---
+
+func main() {
+	configFile := flag.String("config.file", "config.yaml", "Path to configuration file.")
+	healthcheck := flag.Bool("healthcheck", false, "Perform a health check against the configured listen address and exit.")
+	flag.Parse()
+
+	log.Printf("Reading configuration from %s", *configFile)
+	appConfig, err := readConfig(*configFile)
+	if err != nil {
+		log.Fatalf("Fatal: Error reading configuration: %v", err)
 	}
 
-	return config, nil
+	if *healthcheck {
+		performHealthCheck(appConfig.Listen)
+		return
+	}
+
+	log.Printf("Configuration read successfully. %d valid targets loaded.", len(appConfig.TargetsMap))
+	log.Printf("Default probe timeout: %d seconds", appConfig.DefaultTimeoutSeconds)
+
+	metricDescs := newMetricDescriptions()
+
+	// Register handlers
+	http.HandleFunc("/probe", probeHandler(appConfig, metricDescs))
+	http.Handle("/metrics", promhttp.Handler())                         // Exporter's own metrics
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) { // Root handler
+		_, _ = w.Write([]byte(`<html><head><title>Switch Exporter</title></head><body>
+			<h1>Switch Exporter</h1>
+			<p><a href="/probe">Probe Switches (requires 'target' parameter)</a></p>
+			<p><a href="/metrics">Exporter Metrics</a></p>
+			</body></html>`))
+	})
+
+	// Start HTTP server
+	log.Printf("Starting Switch Exporter on %s", appConfig.Listen)
+	server := &http.Server{Addr: appConfig.Listen}
+	go func() {
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("HTTP server error: %v", err)
+		}
+	}()
+
+	// Graceful shutdown
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
+	<-stop
+	log.Println("Shutting down exporter...")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := server.Shutdown(ctx); err != nil {
+		log.Printf("HTTP server shutdown error: %v", err)
+	} else {
+		log.Println("HTTP server gracefully stopped.")
+	}
 }
