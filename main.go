@@ -28,6 +28,7 @@ type Config struct {
 	Password string `yaml:"password"`
 	PollRate int    `yaml:"poll_rate_seconds"`
 	Timeout  int    `yaml:"timeout_seconds"`
+	PoE      int    `yaml:"PoE"`
 }
 
 type Port struct {
@@ -44,17 +45,36 @@ type PortStatistics struct {
 	Ports []Port `json:"port_statistics"`
 }
 
+type PortPoE struct {
+	Name    string
+	State   string
+	Power   string
+	Type    string
+	Watts   float64
+	Voltage float64
+	Current float64
+}
+
+type PoEStatistics struct {
+	Ports []PortPoE
+}
+
+type PoESystem struct {
+	Consumption float64 `json:"consumption"`
+}
+
 type PortStatsCollector struct {
-	config             Config
-	portState          *prometheus.Desc
-	portLinkStatus     *prometheus.Desc
-	portTxGoodPkt      *prometheus.Desc
-	portTxBadPkt       *prometheus.Desc
-	portRxGoodPkt      *prometheus.Desc
-	portRxBadPkt       *prometheus.Desc
-	lastScrapeDuration prometheus.Gauge
-	scrapeErrorsTotal  prometheus.Counter
-	mutex              sync.Mutex
+	config               Config
+	portState            *prometheus.Desc
+	portLinkStatus       *prometheus.Desc
+	portTxGoodPkt        *prometheus.Desc
+	portTxBadPkt         *prometheus.Desc
+	portRxGoodPkt        *prometheus.Desc
+	portRxBadPkt         *prometheus.Desc
+	lastScrapeDuration   prometheus.Gauge
+	scrapeErrorsTotal    prometheus.Counter
+	poeSystemConsumption *prometheus.Desc
+	mutex                sync.Mutex
 }
 
 func NewPortStatsCollector(config Config) *PortStatsCollector {
@@ -89,6 +109,11 @@ func NewPortStatsCollector(config Config) *PortStatsCollector {
 			"port_rx_bad_pkt",
 			"Number of bad packets received on the port",
 			[]string{"port"}, nil,
+		),
+		poeSystemConsumption: prometheus.NewDesc(
+			"poe_system_consumption_watts",
+			"Total PoE consumption in watts",
+			nil, nil,
 		),
 		lastScrapeDuration: promauto.NewGauge(prometheus.GaugeOpts{
 			Name: "exporter_last_scrape_duration_seconds",
@@ -146,6 +171,18 @@ func (c *PortStatsCollector) Collect(ch chan<- prometheus.Metric) {
 		ch <- prometheus.MustNewConstMetric(
 			c.portRxBadPkt, prometheus.GaugeValue,
 			float64(port.RxBadPkt), port.Name,
+		)
+	}
+	// --- Nowe: PoE system ---
+	poeSystem, err := fetchPoESystem(c.config)
+	if err != nil {
+		c.scrapeErrorsTotal.Inc()
+		log.Printf("Error fetching PoE system: %v", err)
+	} else {
+		ch <- prometheus.MustNewConstMetric(
+			c.poeSystemConsumption,
+			prometheus.GaugeValue,
+			poeSystem.Consumption,
 		)
 	}
 
@@ -234,6 +271,46 @@ func fetchPortStatistics(config Config) (PortStatistics, error) {
 	return parsePortStatistics(doc)
 }
 
+func fetchPoESystem(config Config) (PoESystem, error) {
+	baseURL := "http://" + config.Address + "/pse_system.cgi"
+	params := url.Values{}
+	params.Set("page", "stats")
+
+	formParams := url.Values{}
+	formParams.Set("username", config.Username)
+	formParams.Set("password", config.Password)
+	formParams.Set("language", "EN")
+	formParams.Set("Response", getMD5Hash(config.Username+config.Password))
+
+	client := &http.Client{
+		Timeout: time.Duration(config.Timeout) * time.Second,
+	}
+
+	req, err := http.NewRequest("GET", baseURL, strings.NewReader(formParams.Encode()))
+	if err != nil {
+		return PoESystem{}, fmt.Errorf("error creating request: %w", err)
+	}
+
+	cookieValue := getMD5Hash(config.Username + config.Password)
+	req.AddCookie(&http.Cookie{Name: "admin", Value: cookieValue})
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Referer", fmt.Sprintf("http://%s/menu.cgi", config.Address))
+	req.URL.RawQuery = params.Encode()
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return PoESystem{}, fmt.Errorf("error sending request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	doc, err := goquery.NewDocumentFromReader(resp.Body)
+	if err != nil {
+		return PoESystem{}, fmt.Errorf("error parsing HTML: %w", err)
+	}
+
+	return parsePoESystem(doc)
+}
+
 func parsePortStatistics(doc *goquery.Document) (PortStatistics, error) {
 	var stats PortStatistics
 
@@ -263,6 +340,24 @@ func parsePortStatistics(doc *goquery.Document) (PortStatistics, error) {
 	})
 
 	return stats, nil
+}
+
+func parsePoESystem(doc *goquery.Document) (PoESystem, error) {
+	var system PoESystem
+
+	val := doc.Find(`input[name="pse_con_pwr"]`).AttrOr("value", "")
+
+	if val == "" {
+		return system, fmt.Errorf("pse_con_pwr value not found")
+	}
+
+	cons, err := strconv.ParseFloat(val, 64)
+	if err != nil {
+		return system, fmt.Errorf("invalid consumption value: %w", err)
+	}
+
+	system.Consumption = cons
+	return system, nil
 }
 
 func stateToFloat(state string) float64 {
