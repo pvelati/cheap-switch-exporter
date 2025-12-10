@@ -231,29 +231,31 @@ func (c *PortStatsCollector) Collect(ch chan<- prometheus.Metric) {
 		}
 
 		for _, port := range poeStats.Ports {
+			portName := normalizePortName(port.Name)
+
 			ch <- prometheus.MustNewConstMetric(
 				c.poeState, prometheus.GaugeValue,
-				stateToFloat(port.State), port.Name,
+				stateToFloat(port.State), portName,
 			)
 			ch <- prometheus.MustNewConstMetric(
 				c.poePower, prometheus.GaugeValue,
-				powerToFloat(port.Power), port.Name,
+				powerToFloat(port.Power), portName,
 			)
 			ch <- prometheus.MustNewConstMetric(
 				c.poeType, prometheus.GaugeValue,
-				typeToFloat(port.Type), port.Name,
+				typeToFloat(port.Type), portName,
 			)
 			ch <- prometheus.MustNewConstMetric(
 				c.poeWatts, prometheus.GaugeValue,
-				port.Watts, port.Name,
+				port.Watts, portName,
 			)
 			ch <- prometheus.MustNewConstMetric(
 				c.poeVoltage, prometheus.GaugeValue,
-				port.Voltage, port.Name,
+				port.Voltage, portName,
 			)
 			ch <- prometheus.MustNewConstMetric(
 				c.poeCurrent, prometheus.GaugeValue,
-				port.Current, port.Name,
+				port.Current, portName,
 			)
 		}
 	}
@@ -563,6 +565,14 @@ func typeToFloat(s string) float64 {
 	default:
 		return 0
 	}
+}
+
+func normalizePortName(name string) string {
+	name = strings.TrimSpace(name)
+	if strings.HasPrefix(name, "Port ") {
+		return strings.TrimPrefix(name, "Port ")
+	}
+	return name
 }
 
 func getMD5Hash(text string) string {
