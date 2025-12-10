@@ -210,50 +210,52 @@ func (c *PortStatsCollector) Collect(ch chan<- prometheus.Metric) {
 		)
 	}
 
-	poeSystem, err := fetchPoESystem(c.config)
-	if err != nil {
-		c.scrapeErrorsTotal.Inc()
-		log.Printf("Error fetching PoE system: %v", err)
-	} else {
-		ch <- prometheus.MustNewConstMetric(
-			c.poeSystemConsumption,
-			prometheus.GaugeValue,
-			poeSystem.Consumption,
-		)
-	}
+	if c.config.PoE == 1 {
+		poeSystem, err := fetchPoESystem(c.config)
+		if err != nil {
+			c.scrapeErrorsTotal.Inc()
+			log.Printf("Error fetching PoE system: %v", err)
+		} else {
+			ch <- prometheus.MustNewConstMetric(
+				c.poeSystemConsumption,
+				prometheus.GaugeValue,
+				poeSystem.Consumption,
+			)
+		}
 
-	poeStats, err := fetchPoEPorts(c.config)
-	if err != nil {
-		c.scrapeErrorsTotal.Inc()
-		log.Printf("Error fetching PoE port statistics: %v", err)
-		return
-	}
+		poeStats, err := fetchPoEPorts(c.config)
+		if err != nil {
+			c.scrapeErrorsTotal.Inc()
+			log.Printf("Error fetching PoE port statistics: %v", err)
+			return
+		}
 
-	for _, port := range poeStats.Ports {
-		ch <- prometheus.MustNewConstMetric(
-			c.poeState, prometheus.GaugeValue,
-			stateToFloat(port.State), port.Name,
-		)
-		ch <- prometheus.MustNewConstMetric(
-			c.poePower, prometheus.GaugeValue,
-			powerToFloat(port.Power), port.Name,
-		)
-		ch <- prometheus.MustNewConstMetric(
-			c.poeType, prometheus.GaugeValue,
-			typeToFloat(port.Type), port.Name,
-		)
-		ch <- prometheus.MustNewConstMetric(
-			c.poeWatts, prometheus.GaugeValue,
-			port.Watts, port.Name,
-		)
-		ch <- prometheus.MustNewConstMetric(
-			c.poeVoltage, prometheus.GaugeValue,
-			port.Voltage, port.Name,
-		)
-		ch <- prometheus.MustNewConstMetric(
-			c.poeCurrent, prometheus.GaugeValue,
-			port.Current, port.Name,
-		)
+		for _, port := range poeStats.Ports {
+			ch <- prometheus.MustNewConstMetric(
+				c.poeState, prometheus.GaugeValue,
+				stateToFloat(port.State), port.Name,
+			)
+			ch <- prometheus.MustNewConstMetric(
+				c.poePower, prometheus.GaugeValue,
+				powerToFloat(port.Power), port.Name,
+			)
+			ch <- prometheus.MustNewConstMetric(
+				c.poeType, prometheus.GaugeValue,
+				typeToFloat(port.Type), port.Name,
+			)
+			ch <- prometheus.MustNewConstMetric(
+				c.poeWatts, prometheus.GaugeValue,
+				port.Watts, port.Name,
+			)
+			ch <- prometheus.MustNewConstMetric(
+				c.poeVoltage, prometheus.GaugeValue,
+				port.Voltage, port.Name,
+			)
+			ch <- prometheus.MustNewConstMetric(
+				c.poeCurrent, prometheus.GaugeValue,
+				port.Current, port.Name,
+			)
+		}
 	}
 
 	duration := time.Since(start).Seconds()
