@@ -65,6 +65,7 @@ username: "admin"                # Web interface username
 password: "password"             # Web interface password
 poll_rate_seconds: 10            # Metrics polling interval
 timeout_seconds: 5               # Request timeout
+PoE: 0                           # Enable PoE page scrape
 ```
 
 ## 📊 Exposed Metrics
@@ -75,6 +76,14 @@ timeout_seconds: 5               # Request timeout
 - `port_tx_bad_pkt`: Transmitted bad packets
 - `port_rx_good_pkt`: Received good packets
 - `port_rx_bad_pkt`: Received bad packets
+
+- `poe_port_power_on`: PoE port power on/off 
+- `poe_port_state`: State of the PoE port (1=Enable, 0=Disable)
+- `poe_port_type`: PoE port type class
+- `poe_port_voltage`: PoE port voltage in volts
+- `poe_port_watts`: PoE port power consumption in watts
+- `poe_port_current_ma`: PoE port current in mA
+- `poe_system_consumption_watts`: Total PoE consumption in watts
 
 ## 🤝 Contributing
 
