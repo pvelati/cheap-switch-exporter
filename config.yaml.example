@@ -4,4 +4,4 @@ username: "admin"
 password: "admin"
 poll_rate_seconds: 10
 timeout_seconds: 5
-PoE: 0
+poe: 0

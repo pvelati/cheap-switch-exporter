@@ -28,7 +28,7 @@ type Config struct {
 	Password string `yaml:"password"`
 	PollRate int    `yaml:"poll_rate_seconds"`
 	Timeout  int    `yaml:"timeout_seconds"`
-	PoE      int    `yaml:"PoE"`
+	PoE      int    `yaml:"poe"`
 }
 
 type Port struct {
