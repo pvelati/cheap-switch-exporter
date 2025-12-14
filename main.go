@@ -219,7 +219,7 @@ func fetchPortStatistics(config Config) (PortStatistics, error) {
 	req.AddCookie(&http.Cookie{Name: "admin", Value: cookieValue})
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	// With KeepLink KP-9000-9XHML-X, the Referer header is required or the response will be empty
-	req.Header.Set("Referer", "http://"+config.Address+"/menu.cgi")
+	req.Header.Set("Referer", fmt.Sprintf("http://%s/menu.cgi", config.Address))
 	req.URL.RawQuery = params.Encode()
 
 	resp, err := client.Do(req)
