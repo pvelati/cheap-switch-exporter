@@ -34,10 +34,10 @@ type Port struct {
 	Name       string `json:"port"`
 	State      string `json:"state"`
 	LinkStatus string `json:"link_status"`
-	TxGoodPkt  int    `json:"tx_good_pkt"`
-	TxBadPkt   int    `json:"tx_bad_pkt"`
-	RxGoodPkt  int    `json:"rx_good_pkt"`
-	RxBadPkt   int    `json:"rx_bad_pkt"`
+	TxGoodPkt  uint64 `json:"tx_good_pkt"`
+	TxBadPkt   uint64 `json:"tx_bad_pkt"`
+	RxGoodPkt  uint64 `json:"rx_good_pkt"`
+	RxBadPkt   uint64 `json:"rx_bad_pkt"`
 }
 
 type PortStatistics struct {
@@ -132,19 +132,19 @@ func (c *PortStatsCollector) Collect(ch chan<- prometheus.Metric) {
 			linkStatusToFloat(port.LinkStatus), port.Name,
 		)
 		ch <- prometheus.MustNewConstMetric(
-			c.portTxGoodPkt, prometheus.GaugeValue,
+			c.portTxGoodPkt, prometheus.CounterValue,
 			float64(port.TxGoodPkt), port.Name,
 		)
 		ch <- prometheus.MustNewConstMetric(
-			c.portTxBadPkt, prometheus.GaugeValue,
+			c.portTxBadPkt, prometheus.CounterValue,
 			float64(port.TxBadPkt), port.Name,
 		)
 		ch <- prometheus.MustNewConstMetric(
-			c.portRxGoodPkt, prometheus.GaugeValue,
+			c.portRxGoodPkt, prometheus.CounterValue,
 			float64(port.RxGoodPkt), port.Name,
 		)
 		ch <- prometheus.MustNewConstMetric(
-			c.portRxBadPkt, prometheus.GaugeValue,
+			c.portRxBadPkt, prometheus.CounterValue,
 			float64(port.RxBadPkt), port.Name,
 		)
 	}
@@ -180,7 +180,7 @@ func main() {
 	// Start Prometheus HTTP server
 	http.Handle("/metrics", promhttp.Handler())
 	go func() {
-		log.Println("Starting Prometheus exporter on :8080/metrics")
+		log.Println("Starting Prometheus exporter on: 8080/metrics")
 		if err := http.ListenAndServe(":8080", nil); err != nil {
 			log.Fatalf("HTTP server error: %v", err)
 		}
@@ -210,6 +210,7 @@ func fetchPortStatistics(config Config) (PortStatistics, error) {
 	}
 
 	req, err := http.NewRequest("GET", baseURL, strings.NewReader(formParams.Encode()))
+	log.Printf("Request: %+v", req)
 	if err != nil {
 		return PortStatistics{}, fmt.Errorf("error creating request: %w", err)
 	}
@@ -217,6 +218,7 @@ func fetchPortStatistics(config Config) (PortStatistics, error) {
 	cookieValue := getMD5Hash(config.Username + config.Password)
 	req.AddCookie(&http.Cookie{Name: "admin", Value: cookieValue})
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	// With KeepLink KP-9000-9XHML-X, the Referer header is required or the response will be empty
 	req.Header.Set("Referer", fmt.Sprintf("http://%s/menu.cgi", config.Address))
 	req.URL.RawQuery = params.Encode()
 
@@ -237,10 +239,16 @@ func fetchPortStatistics(config Config) (PortStatistics, error) {
 func parsePortStatistics(doc *goquery.Document) (PortStatistics, error) {
 	var stats PortStatistics
 
-	doc.Find("table tr").Each(func(i int, s *goquery.Selection) {
+	doc.Find("table").Find("tr").Each(func(i int, s *goquery.Selection) {
+
 		if i != 0 {
 			port := Port{}
 			s.Find("td").Each(func(j int, td *goquery.Selection) {
+
+				cellValue := strings.TrimSpace(td.Text())
+				// With KeepLink KP-9000-9XHML-X, some values are unexpectedly prefixed with "0-"
+				cellValue = strings.TrimPrefix(cellValue, "0-")
+
 				switch j {
 				case 0:
 					port.Name = td.Text()
@@ -249,13 +257,17 @@ func parsePortStatistics(doc *goquery.Document) (PortStatistics, error) {
 				case 2:
 					port.LinkStatus = td.Text()
 				case 3:
-					port.TxGoodPkt, _ = strconv.Atoi(strings.TrimSpace(td.Text()))
+					val, _ := strconv.ParseUint(cellValue, 10, 64)
+					port.TxGoodPkt = val
 				case 4:
-					port.TxBadPkt, _ = strconv.Atoi(strings.TrimSpace(td.Text()))
+					val, _ := strconv.ParseUint(cellValue, 10, 64)
+					port.TxBadPkt = val
 				case 5:
-					port.RxGoodPkt, _ = strconv.Atoi(strings.TrimSpace(td.Text()))
+					val, _ := strconv.ParseUint(cellValue, 10, 64)
+					port.RxGoodPkt = val
 				case 6:
-					port.RxBadPkt, _ = strconv.Atoi(strings.TrimSpace(td.Text()))
+					val, _ := strconv.ParseUint(cellValue, 10, 64)
+					port.RxBadPkt = val
 				}
 			})
 			stats.Ports = append(stats.Ports, port)
