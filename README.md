@@ -18,6 +18,7 @@ Many budget-friendly network switches do not support standard SNMP monitoring. T
 | Horaco | ZX-SWTGW215AS | ✅ Verified | @askainet |
 | Horaco | ZX-SWTGW218AS | ✅ Verified | @pvelati |
 | Sodola | SL-SWTG124AS | ✅ Verified | @dennyreiter |
+| KeepLink | KP-9000-9XHPML-X-AC | ✅ Verified | @jfallot
 
 ## 🚀 Installation
 
