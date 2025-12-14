@@ -217,6 +217,7 @@ func fetchPortStatistics(config Config) (PortStatistics, error) {
 	cookieValue := getMD5Hash(config.Username + config.Password)
 	req.AddCookie(&http.Cookie{Name: "admin", Value: cookieValue})
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Referer", fmt.Sprintf("http://%s/menu.cgi", config.Address))
 	req.URL.RawQuery = params.Encode()
 
 	resp, err := client.Do(req)
