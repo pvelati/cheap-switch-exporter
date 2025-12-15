@@ -28,6 +28,7 @@ type Config struct {
 	Password string `yaml:"password"`
 	PollRate int    `yaml:"poll_rate_seconds"`
 	Timeout  int    `yaml:"timeout_seconds"`
+	PoE      int    `yaml:"poe"`
 }
 
 type Port struct {
@@ -44,17 +45,42 @@ type PortStatistics struct {
 	Ports []Port `json:"port_statistics"`
 }
 
+type PortPoE struct {
+	Name    string  `json:"port"`
+	State   string  `json:"state"`
+	Power   string  `json:"power"` // "On" / "Off"
+	Type    string  `json:"type"`  // "-" or "Class1"/"Class2"/...
+	Watts   float64 `json:"watts"`
+	Voltage float64 `json:"voltage"`
+	Current float64 `json:"current"`
+}
+
+type PoEStatistics struct {
+	Ports []PortPoE `json:"ports"`
+}
+
+type PoESystem struct {
+	Consumption float64 `json:"consumption"`
+}
+
 type PortStatsCollector struct {
-	config             Config
-	portState          *prometheus.Desc
-	portLinkStatus     *prometheus.Desc
-	portTxGoodPkt      *prometheus.Desc
-	portTxBadPkt       *prometheus.Desc
-	portRxGoodPkt      *prometheus.Desc
-	portRxBadPkt       *prometheus.Desc
-	lastScrapeDuration prometheus.Gauge
-	scrapeErrorsTotal  prometheus.Counter
-	mutex              sync.Mutex
+	config               Config
+	portState            *prometheus.Desc
+	portLinkStatus       *prometheus.Desc
+	portTxGoodPkt        *prometheus.Desc
+	portTxBadPkt         *prometheus.Desc
+	portRxGoodPkt        *prometheus.Desc
+	portRxBadPkt         *prometheus.Desc
+	lastScrapeDuration   prometheus.Gauge
+	scrapeErrorsTotal    prometheus.Counter
+	poeSystemConsumption *prometheus.Desc
+	poeState             *prometheus.Desc
+	poePower             *prometheus.Desc
+	poeType              *prometheus.Desc
+	poeWatts             *prometheus.Desc
+	poeVoltage           *prometheus.Desc
+	poeCurrent           *prometheus.Desc
+	mutex                sync.Mutex
 }
 
 func NewPortStatsCollector(config Config) *PortStatsCollector {
@@ -88,6 +114,41 @@ func NewPortStatsCollector(config Config) *PortStatsCollector {
 		portRxBadPkt: prometheus.NewDesc(
 			"port_rx_bad_pkt",
 			"Number of bad packets received on the port",
+			[]string{"port"}, nil,
+		),
+		poeSystemConsumption: prometheus.NewDesc(
+			"poe_system_consumption_watts",
+			"Total PoE consumption in watts",
+			nil, nil,
+		),
+		poeState: prometheus.NewDesc(
+			"poe_port_state",
+			"State of the PoE port (1=Enable, 0=Disable)",
+			[]string{"port"}, nil,
+		),
+		poePower: prometheus.NewDesc(
+			"poe_port_power_on",
+			"PoE port power on/off (1=On, 0=Off)",
+			[]string{"port"}, nil,
+		),
+		poeType: prometheus.NewDesc(
+			"poe_port_type",
+			"PoE port type class (1-4, 0=none)",
+			[]string{"port"}, nil,
+		),
+		poeWatts: prometheus.NewDesc(
+			"poe_port_watts",
+			"PoE port power consumption in watts",
+			[]string{"port"}, nil,
+		),
+		poeVoltage: prometheus.NewDesc(
+			"poe_port_voltage",
+			"PoE port voltage in volts",
+			[]string{"port"}, nil,
+		),
+		poeCurrent: prometheus.NewDesc(
+			"poe_port_current_ma",
+			"PoE port current in mA",
 			[]string{"port"}, nil,
 		),
 		lastScrapeDuration: promauto.NewGauge(prometheus.GaugeOpts{
@@ -147,6 +208,56 @@ func (c *PortStatsCollector) Collect(ch chan<- prometheus.Metric) {
 			c.portRxBadPkt, prometheus.CounterValue,
 			float64(port.RxBadPkt), port.Name,
 		)
+	}
+
+	if c.config.PoE == 1 {
+		poeSystem, err := fetchPoESystem(c.config)
+		if err != nil {
+			c.scrapeErrorsTotal.Inc()
+			log.Printf("Error fetching PoE system: %v", err)
+		} else {
+			ch <- prometheus.MustNewConstMetric(
+				c.poeSystemConsumption,
+				prometheus.GaugeValue,
+				poeSystem.Consumption,
+			)
+		}
+
+		poeStats, err := fetchPoEPorts(c.config)
+		if err != nil {
+			c.scrapeErrorsTotal.Inc()
+			log.Printf("Error fetching PoE port statistics: %v", err)
+			return
+		}
+
+		for _, port := range poeStats.Ports {
+			portName := normalizePortName(port.Name)
+
+			ch <- prometheus.MustNewConstMetric(
+				c.poeState, prometheus.GaugeValue,
+				stateToFloat(port.State), portName,
+			)
+			ch <- prometheus.MustNewConstMetric(
+				c.poePower, prometheus.GaugeValue,
+				powerToFloat(port.Power), portName,
+			)
+			ch <- prometheus.MustNewConstMetric(
+				c.poeType, prometheus.GaugeValue,
+				typeToFloat(port.Type), portName,
+			)
+			ch <- prometheus.MustNewConstMetric(
+				c.poeWatts, prometheus.GaugeValue,
+				port.Watts, portName,
+			)
+			ch <- prometheus.MustNewConstMetric(
+				c.poeVoltage, prometheus.GaugeValue,
+				port.Voltage, portName,
+			)
+			ch <- prometheus.MustNewConstMetric(
+				c.poeCurrent, prometheus.GaugeValue,
+				port.Current, portName,
+			)
+		}
 	}
 
 	duration := time.Since(start).Seconds()
@@ -236,6 +347,86 @@ func fetchPortStatistics(config Config) (PortStatistics, error) {
 	return parsePortStatistics(doc)
 }
 
+func fetchPoESystem(config Config) (PoESystem, error) {
+	baseURL := "http://" + config.Address + "/pse_system.cgi"
+	params := url.Values{}
+	params.Set("page", "stats")
+
+	formParams := url.Values{}
+	formParams.Set("username", config.Username)
+	formParams.Set("password", config.Password)
+	formParams.Set("language", "EN")
+	formParams.Set("Response", getMD5Hash(config.Username+config.Password))
+
+	client := &http.Client{
+		Timeout: time.Duration(config.Timeout) * time.Second,
+	}
+
+	req, err := http.NewRequest("GET", baseURL, strings.NewReader(formParams.Encode()))
+	if err != nil {
+		return PoESystem{}, fmt.Errorf("error creating request: %w", err)
+	}
+
+	cookieValue := getMD5Hash(config.Username + config.Password)
+	req.AddCookie(&http.Cookie{Name: "admin", Value: cookieValue})
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Referer", fmt.Sprintf("http://%s/menu.cgi", config.Address))
+	req.URL.RawQuery = params.Encode()
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return PoESystem{}, fmt.Errorf("error sending request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	doc, err := goquery.NewDocumentFromReader(resp.Body)
+	if err != nil {
+		return PoESystem{}, fmt.Errorf("error parsing HTML: %w", err)
+	}
+
+	return parsePoESystem(doc)
+}
+
+func fetchPoEPorts(config Config) (PoEStatistics, error) {
+	baseURL := "http://" + config.Address + "/pse_port.cgi"
+	params := url.Values{}
+	params.Set("page", "stats")
+
+	formParams := url.Values{}
+	formParams.Set("username", config.Username)
+	formParams.Set("password", config.Password)
+	formParams.Set("language", "EN")
+	formParams.Set("Response", getMD5Hash(config.Username+config.Password))
+
+	client := &http.Client{
+		Timeout: time.Duration(config.Timeout) * time.Second,
+	}
+
+	req, err := http.NewRequest("GET", baseURL, strings.NewReader(formParams.Encode()))
+	if err != nil {
+		return PoEStatistics{}, fmt.Errorf("error creating request: %w", err)
+	}
+
+	cookieValue := getMD5Hash(config.Username + config.Password)
+	req.AddCookie(&http.Cookie{Name: "admin", Value: cookieValue})
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Referer", fmt.Sprintf("http://%s/menu.cgi", config.Address))
+	req.URL.RawQuery = params.Encode()
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return PoEStatistics{}, fmt.Errorf("error sending request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	doc, err := goquery.NewDocumentFromReader(resp.Body)
+	if err != nil {
+		return PoEStatistics{}, fmt.Errorf("error parsing HTML: %w", err)
+	}
+
+	return parsePoEPorts(doc)
+}
+
 func parsePortStatistics(doc *goquery.Document) (PortStatistics, error) {
 	var stats PortStatistics
 
@@ -277,6 +468,66 @@ func parsePortStatistics(doc *goquery.Document) (PortStatistics, error) {
 	return stats, nil
 }
 
+func parsePoESystem(doc *goquery.Document) (PoESystem, error) {
+	var system PoESystem
+
+	val := doc.Find(`input[name="pse_con_pwr"]`).AttrOr("value", "")
+
+	if val == "" {
+		return system, fmt.Errorf("pse_con_pwr value not found")
+	}
+
+	cons, err := strconv.ParseFloat(val, 64)
+	if err != nil {
+		return system, fmt.Errorf("invalid consumption value: %w", err)
+	}
+
+	system.Consumption = cons
+	return system, nil
+}
+
+func parsePoEPorts(doc *goquery.Document) (PoEStatistics, error) {
+	var stats PoEStatistics
+
+	doc.Find("table tbody tr").Each(func(i int, s *goquery.Selection) {
+		if s.Find("th").Length() > 0 {
+			return
+		}
+
+		tds := s.ChildrenFiltered("td")
+		if tds.Length() != 7 {
+			return
+		}
+
+		var port PortPoE
+		tds.Each(func(j int, td *goquery.Selection) {
+			text := strings.TrimSpace(td.Text())
+			switch j {
+			case 0:
+				port.Name = text
+			case 1:
+				port.State = text
+			case 2:
+				port.Power = text
+			case 3:
+				port.Type = text
+			case 4:
+				port.Watts = parseFloatOrZero(text)
+			case 5:
+				port.Voltage = parseFloatOrZero(text)
+			case 6:
+				port.Current = parseFloatOrZero(text)
+			}
+		})
+
+		if port.Name != "" {
+			stats.Ports = append(stats.Ports, port)
+		}
+	})
+
+	return stats, nil
+}
+
 func stateToFloat(state string) float64 {
 	return map[string]float64{
 		"Enable":  1.0,
@@ -289,6 +540,51 @@ func linkStatusToFloat(status string) float64 {
 		"Link Up":   1.0,
 		"Link Down": 0.0,
 	}[status]
+}
+
+func parseFloatOrZero(s string) float64 {
+	if s == "-" || s == "" {
+		return 0
+	}
+	val, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return 0
+	}
+	return val
+}
+
+func powerToFloat(s string) float64 {
+	switch s {
+	case "On":
+		return 1
+	case "Off":
+		return 0
+	default:
+		return 0
+	}
+}
+
+func typeToFloat(s string) float64 {
+	switch s {
+	case "Class1":
+		return 1
+	case "Class2":
+		return 2
+	case "Class3":
+		return 3
+	case "Class4":
+		return 4
+	default:
+		return 0
+	}
+}
+
+func normalizePortName(name string) string {
+	name = strings.TrimSpace(name)
+	if strings.HasPrefix(name, "Port ") {
+		return strings.TrimPrefix(name, "Port ")
+	}
+	return name
 }
 
 func getMD5Hash(text string) string {
