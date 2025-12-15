@@ -17,8 +17,8 @@ Many budget-friendly network switches do not support standard SNMP monitoring. T
 | Ampcom | WAMJHJ-8125MNG | ✅ Verified | @askainet |
 | Horaco | ZX-SWTGW215AS | ✅ Verified | @askainet |
 | Horaco | ZX-SWTGW218AS | ✅ Verified | @pvelati |
+| KeepLink | KP-9000-9XHPML-X | ✅ Verified | @jfallot and @adamchabin |
 | Sodola | SL-SWTG124AS | ✅ Verified | @dennyreiter |
-| KeepLink | KP-9000-9XHPML-X-AC | ✅ Verified | @jfallot
 
 ## 🚀 Installation
 
@@ -66,7 +66,7 @@ username: "admin"                # Web interface username
 password: "password"             # Web interface password
 poll_rate_seconds: 10            # Metrics polling interval
 timeout_seconds: 5               # Request timeout
-PoE: 0                           # Enable PoE page scrape
+poe: 0                           # Enable PoE page scrape
 ```
 
 ## 📊 Exposed Metrics
@@ -77,6 +77,8 @@ PoE: 0                           # Enable PoE page scrape
 - `port_tx_bad_pkt`: Transmitted bad packets
 - `port_rx_good_pkt`: Received good packets
 - `port_rx_bad_pkt`: Received bad packets
+
+### PoE metrics (when enabled in config)
 
 - `poe_port_power_on`: PoE port power on/off 
 - `poe_port_state`: State of the PoE port (1=Enable, 0=Disable)

@@ -22,3 +22,6 @@ go.work
 
 ## exporter-config-file
 config.yaml
+
+# build
+cheap-switch-exporter
