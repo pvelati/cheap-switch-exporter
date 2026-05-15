@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/md5"
 	"encoding/hex"
+	"flag"
 	"fmt"
 	"log"
 	"net/http"
@@ -20,6 +21,10 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"gopkg.in/yaml.v3"
+)
+
+var (
+	configFile = flag.String("config-file", "config.yaml", "config file to load")
 )
 
 type Config struct {
@@ -266,7 +271,8 @@ func (c *PortStatsCollector) Collect(ch chan<- prometheus.Metric) {
 
 func main() {
 	// Read configuration
-	config, err := readConfig("config.yaml")
+	flag.Parse()
+	config, err := readConfig(*configFile)
 	if err != nil {
 		log.Fatalf("Error reading configuration: %v", err)
 	}
