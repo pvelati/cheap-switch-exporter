@@ -25,6 +25,7 @@ import (
 
 var (
 	configFile = flag.String("config-file", "config.yaml", "config file to load")
+	port       = flag.String("port", ":8080", "port number to listen on")
 )
 
 type Config struct {
@@ -297,8 +298,8 @@ func main() {
 	// Start Prometheus HTTP server
 	http.Handle("/metrics", promhttp.Handler())
 	go func() {
-		log.Println("Starting Prometheus exporter on: 8080/metrics")
-		if err := http.ListenAndServe(":8080", nil); err != nil {
+		log.Printf("Starting Prometheus exporter on: %s/metrics", *port)
+		if err := http.ListenAndServe(*port, nil); err != nil {
 			log.Fatalf("HTTP server error: %v", err)
 		}
 	}()
