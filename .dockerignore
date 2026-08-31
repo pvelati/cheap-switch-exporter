@@ -11,6 +11,7 @@
 Dockerfile
 config.yaml
 *.md
+dashboards
 cheap-switch-exporter
 *.test
 *.out

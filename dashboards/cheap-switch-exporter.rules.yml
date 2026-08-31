@@ -1,0 +1,91 @@
+# Prometheus alerting rules for cheap-switch-exporter.
+#
+# Load with a rule_files entry in prometheus.yml:
+#
+#   rule_files:
+#     - /etc/prometheus/rules/cheap-switch-exporter.yml
+#
+# The thresholds on the port rules are starting points. Bad packet counters and
+# link flaps are very site specific, so tune them before relying on them.
+groups:
+  - name: cheap-switch-exporter
+    rules:
+      # The series to alert on. It is present even while the switch is
+      # unreachable, which is exactly when a disappearing series would be
+      # useless.
+      - alert: SwitchUnreachable
+        expr: exporter_up == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Switch behind {{ $labels.instance }} cannot be polled"
+          description: >-
+            The exporter has failed to read statistics from the switch for over
+            5 minutes. Usual causes are wrong credentials, an unreachable
+            management address, or a firmware whose page layout is not
+            supported. Run the exporter with --log.level=debug to see which
+            values it could not interpret.
+
+      # Distinct from the above: the exporter itself is gone, so Prometheus has
+      # nothing to scrape.
+      - alert: SwitchExporterDown
+        expr: up{job=~".*switch.*"} == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "cheap-switch-exporter on {{ $labels.instance }} is not responding"
+          description: >-
+            Adjust the job matcher to whatever this exporter is called in your
+            scrape configuration.
+
+      - alert: SwitchPollErrors
+        expr: increase(exporter_scrape_errors_total[15m]) > 3
+        for: 15m
+        labels:
+          severity: info
+        annotations:
+          summary: "Repeated poll failures against {{ $labels.instance }}"
+          description: >-
+            More than three requests to the switch failed in the last 15
+            minutes while the exporter is otherwise up. These web interfaces
+            serve one session at a time, so consider raising
+            poll_rate_seconds.
+
+      - alert: SwitchPortReceiveErrors
+        expr: rate(port_rx_bad_pkt[10m]) > 1
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Port {{ $labels.port }} on {{ $labels.instance }} is receiving bad packets"
+          description: >-
+            Sustained bad packet rate of {{ $value | printf "%.2f" }} per
+            second. Usually cabling, a duplex mismatch or a failing
+            transceiver.
+
+      # An enabled port with no link is often normal on a switch with spare
+      # capacity, so this is informational and worth restricting to the ports
+      # you actually care about.
+      - alert: SwitchPortLinkDown
+        expr: port_link_status == 0 and port_state == 1
+        for: 30m
+        labels:
+          severity: info
+        annotations:
+          summary: "Port {{ $labels.port }} on {{ $labels.instance }} is enabled but has no link"
+          description: >-
+            Expected for unused ports. Narrow the expression with a port label
+            matcher before enabling this in anger.
+
+      - alert: SwitchPoEPortLostPower
+        expr: poe_port_power_on == 0 and poe_port_state == 1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "PoE port {{ $labels.port }} on {{ $labels.instance }} stopped delivering power"
+          description: >-
+            The port is enabled for PoE but is not powering a device. Either
+            the powered device was removed or the port tripped.

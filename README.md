@@ -187,6 +187,14 @@ Plus the standard `go_*`, `process_*` and `promhttp_*` metrics.
 exporter_up == 0
 ```
 
+### Dashboard and alerting rules
+
+[`dashboards/`](dashboards/) contains an example Grafana dashboard and a set of
+Prometheus alerting rules. Both are validated by the test suite, which fails if
+they query a metric the exporter does not publish, so they cannot drift out of
+date silently. See [`dashboards/README.md`](dashboards/README.md) for how to
+import them and what to tune.
+
 ## Development
 
 Run this after every change:
