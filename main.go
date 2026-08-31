@@ -69,10 +69,13 @@ type options struct {
 	logLevel      string
 	logFormat     string
 	showVersion   bool
+	// deprecated collects notices to log once the logger exists.
+	deprecated []string
 }
 
 func parseFlags(args []string, out io.Writer) (options, error) {
 	var opts options
+	var legacyPort string
 
 	fs := flag.NewFlagSet("cheap-switch-exporter", flag.ContinueOnError)
 	fs.SetOutput(out)
@@ -80,7 +83,9 @@ func parseFlags(args []string, out io.Writer) (options, error) {
 	// invoked the binary with it.
 	fs.StringVar(&opts.configPath, "c", defaultConfigPath, "Path to the configuration file (shorthand).")
 	fs.StringVar(&opts.configPath, "config", defaultConfigPath, "Path to the configuration file.")
+	fs.StringVar(&opts.configPath, "config-file", defaultConfigPath, "Path to the configuration file (alias of -config).")
 	fs.StringVar(&opts.listenAddr, "web.listen-address", defaultListenAddr, "Address to listen on for the metrics endpoint.")
+	fs.StringVar(&legacyPort, "port", "", "Deprecated alias of -web.listen-address.")
 	fs.StringVar(&opts.telemetryPath, "web.telemetry-path", "/metrics", "Path under which to expose the metrics.")
 	fs.StringVar(&opts.logLevel, "log.level", "info", "Log level: debug, info, warn or error.")
 	fs.StringVar(&opts.logFormat, "log.format", "text", "Log format: text or json.")
@@ -92,6 +97,18 @@ func parseFlags(args []string, out io.Writer) (options, error) {
 	if fs.NArg() > 0 {
 		return options{}, fmt.Errorf("unexpected positional arguments: %v", fs.Args())
 	}
+
+	provided := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { provided[f.Name] = true })
+	if provided["port"] {
+		if provided["web.listen-address"] {
+			return options{}, errors.New("-port is a deprecated alias of -web.listen-address; set only one")
+		}
+		opts.listenAddr = legacyPort
+		opts.deprecated = append(opts.deprecated,
+			"-port is deprecated, use -web.listen-address")
+	}
+
 	if !strings.HasPrefix(opts.telemetryPath, "/") {
 		return options{}, fmt.Errorf("web.telemetry-path must start with '/', got %q", opts.telemetryPath)
 	}
@@ -119,6 +136,9 @@ func run(ctx context.Context, args []string, stdout io.Writer) error {
 	logger, err := newLogger(stdout, opts.logLevel, opts.logFormat)
 	if err != nil {
 		return err
+	}
+	for _, notice := range opts.deprecated {
+		logger.Warn("deprecated flag", "detail", notice)
 	}
 
 	cfg, err := config.Load(opts.configPath)

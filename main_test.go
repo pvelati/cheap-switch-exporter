@@ -44,6 +44,8 @@ func TestParseFlagsConfigAliases(t *testing.T) {
 		{"-c", "/etc/cse/config.yaml"},
 		{"--config", "/etc/cse/config.yaml"},
 		{"-config=/etc/cse/config.yaml"},
+		// The spelling proposed in PR #20.
+		{"--config-file", "/etc/cse/config.yaml"},
 	} {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
 			opts, err := parseFlags(args, io.Discard)
@@ -54,6 +56,35 @@ func TestParseFlagsConfigAliases(t *testing.T) {
 				t.Errorf("configPath = %q", opts.configPath)
 			}
 		})
+	}
+}
+
+// -port is the spelling proposed in PR #20. It takes an address despite the
+// name, so it is accepted as a deprecated alias rather than reintroduced.
+func TestParseFlagsDeprecatedPortAlias(t *testing.T) {
+	opts, err := parseFlags([]string{"-port", "127.0.0.1:9999"}, io.Discard)
+	if err != nil {
+		t.Fatalf("parseFlags: %v", err)
+	}
+	if opts.listenAddr != "127.0.0.1:9999" {
+		t.Errorf("listenAddr = %q, want the -port value", opts.listenAddr)
+	}
+	if len(opts.deprecated) != 1 || !strings.Contains(opts.deprecated[0], "web.listen-address") {
+		t.Errorf("deprecated = %v, want a notice pointing at the new flag", opts.deprecated)
+	}
+
+	// Setting both is ambiguous and must be refused rather than guessed.
+	if _, err := parseFlags([]string{"-port", ":1", "--web.listen-address", ":2"}, io.Discard); err == nil {
+		t.Error("want an error when both spellings are given")
+	}
+
+	// Without it, nothing is reported as deprecated.
+	opts, err = parseFlags([]string{"--web.listen-address", ":9100"}, io.Discard)
+	if err != nil {
+		t.Fatalf("parseFlags: %v", err)
+	}
+	if len(opts.deprecated) != 0 {
+		t.Errorf("deprecated = %v, want none", opts.deprecated)
 	}
 }
 

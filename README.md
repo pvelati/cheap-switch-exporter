@@ -74,12 +74,15 @@ docker buildx build --platform linux/amd64,linux/arm64 \
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `-c`, `--config` | `config.yaml` | Path to the configuration file |
+| `-c`, `--config`, `--config-file` | `config.yaml` | Path to the configuration file |
 | `--web.listen-address` | `:8080` | Address to listen on |
 | `--web.telemetry-path` | `/metrics` | Path under which metrics are exposed |
 | `--log.level` | `info` | `debug`, `info`, `warn` or `error` |
 | `--log.format` | `text` | `text` or `json` |
 | `--version` | | Print the version and exit |
+
+`--port` is accepted as a deprecated alias of `--web.listen-address`; it takes an
+address, not a port number, and logs a warning.
 
 Use `--log.level=debug` to see the values the exporter could not interpret; that is the fastest way to diagnose an unsupported firmware.
 
