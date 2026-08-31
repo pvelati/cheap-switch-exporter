@@ -23,5 +23,10 @@ go.work
 ## exporter-config-file
 config.yaml
 
-# build
-cheap-switch-exporter
+# build artefacts, anchored to the repository root so that the source
+# directories cmd/fakeswitch and internal/fakeswitch are not swallowed
+/cheap-switch-exporter
+/fakeswitch
+
+# coverage
+/coverage.out

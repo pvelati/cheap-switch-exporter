@@ -1,0 +1,21 @@
+<html>
+<head><title>Port Statistics</title></head>
+<body>
+<!-- Navigation table rendered on every page: must not be mistaken for data. -->
+<table>
+  <tr><td><a href="port.cgi">Port</a></td><td><a href="vlan.cgi">VLAN</a></td></tr>
+</table>
+<form method="post" action="port.cgi?page=stats">
+<table border="1">
+  <tr>
+    <td>Port</td><td>State</td><td>Link Status</td>
+    <td>TxGoodPkt</td><td>TxBadPkt</td><td>RxGoodPkt</td><td>RxBadPkt</td>
+  </tr>
+  <tr><td>Port 1</td><td>Enable</td><td>Link Up</td><td>1234567</td><td>0</td><td>7654321</td><td>3</td></tr>
+  <tr><td>Port 2</td><td>Enable</td><td>Link Down</td><td>0</td><td>0</td><td>0</td><td>0</td></tr>
+  <tr><td>Port 3</td><td>Disable</td><td>Link Down</td><td>10</td><td>1</td><td>20</td><td>2</td></tr>
+  <tr><td> Port 4 </td><td>Enable&nbsp;</td><td>Link Up</td><td>1,234</td><td>-</td><td>5678</td><td>0</td></tr>
+</table>
+</form>
+</body>
+</html>
