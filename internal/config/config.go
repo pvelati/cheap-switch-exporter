@@ -61,6 +61,10 @@ type Config struct {
 	// PoE enables scraping of the PoE pages. Accepts true/false as well as
 	// the historical 1/0 spelling.
 	PoE FlexBool `yaml:"poe"`
+	// Firmware selects how the device exposes its statistics. Empty means
+	// FirmwareHTML, which is what every device supported before this key
+	// existed.
+	Firmware string `yaml:"firmware"`
 	// Web configures the exporter's own HTTP endpoint.
 	Web WebConfig `yaml:"web"`
 }
@@ -74,6 +78,23 @@ type WebConfig struct {
 	// metrics endpoint when both are set.
 	AuthUsername string `yaml:"auth_username"`
 	AuthPassword string `yaml:"auth_password"`
+}
+
+// Firmware families the exporter can talk to.
+const (
+	// FirmwareHTML scrapes the HTML pages of the RTL8373 style web interface.
+	FirmwareHTML = "html"
+	// FirmwareJSON reads /port_statistics.json, as served by MaxLinear based
+	// devices such as the Goodtop ZX310S-8T2XS. See issue #6.
+	FirmwareJSON = "json"
+)
+
+// FirmwareOrDefault returns the configured firmware family, defaulting to HTML.
+func (c Config) FirmwareOrDefault() string {
+	if c.Firmware == "" {
+		return FirmwareHTML
+	}
+	return strings.ToLower(strings.TrimSpace(c.Firmware))
 }
 
 // PollRate returns the minimum delay between two polls of the switch.
@@ -110,7 +131,7 @@ func (c Config) String() string {
 	return fmt.Sprintf("address=%s username=%s password=%s poll_rate=%s "+
 		"timeout=%s poe=%t tls=%t auth=%t",
 		c.Address, c.Username, c.Password, c.PollRate(),
-		c.Timeout(), bool(c.PoE), c.TLSEnabled(), c.AuthEnabled())
+		c.Timeout(), bool(c.PoE), c.TLSEnabled(), c.AuthEnabled()) + " firmware=" + c.FirmwareOrDefault()
 }
 
 func redactIfSet(s string) string {
@@ -193,6 +214,17 @@ func (c Config) Validate() error {
 	}
 	if c.PollRateSeconds != nil && *c.PollRateSeconds < 0 {
 		return fmt.Errorf("poll_rate_seconds must not be negative, got %d", *c.PollRateSeconds)
+	}
+	switch c.FirmwareOrDefault() {
+	case FirmwareHTML:
+	case FirmwareJSON:
+		// No PoE endpoint has been reported for this family, so asking for it
+		// would fail every scrape.
+		if bool(c.PoE) {
+			return fmt.Errorf("poe is not supported with firmware: %s", FirmwareJSON)
+		}
+	default:
+		return fmt.Errorf("firmware must be %q or %q, got %q", FirmwareHTML, FirmwareJSON, c.Firmware)
 	}
 	return c.Web.validate()
 }

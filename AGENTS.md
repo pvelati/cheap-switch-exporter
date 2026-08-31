@@ -30,7 +30,7 @@ mis-typechecks the sources and reports nonsense. The pinned version is in
 |------|----------------|
 | `main.go` | Flags, logging, HTTP server, process lifecycle |
 | `internal/config` | Schema, validation, secrets, redaction |
-| `internal/switchclient` | Device transport and HTML interpretation |
+| `internal/switchclient` | Device transport and response interpretation, both firmware families |
 | `internal/collector` | `prometheus.Collector`, nothing else |
 | `internal/fakeswitch` | Device emulator shared by tests and `cmd/fakeswitch` |
 | `cmd/fakeswitch` | Standalone emulator for manual testing and demos |
@@ -65,6 +65,17 @@ it is offered. Renaming the counters is the real fix and needs a major version.
 `exporter_last_scrape_duration_seconds`, `exporter_scrape_errors_total` and
 `exporter_build_info` must appear even when the device is unreachable. A series
 that disappears exactly when things break cannot be alerted on.
+
+**Two firmware families share one package.** `switchclient.Client` scrapes HTML
+and `switchclient.JSONClient` reads `/port_statistics.json`. Both satisfy
+`collector.SwitchClient`, so the collector does not know which is in use. Shared
+helpers (`parseUint`, `parseEnabled`, `normalizePortName`, `md5Hex`) are reused
+deliberately; keep new device support inside this seam rather than teaching the
+collector about firmwares.
+
+Their credential schemes differ and must not be unified: the HTML family sends
+one `md5(username+password)` token, the JSON family hashes the two separately as
+`loginusr` and `loginpwd`.
 
 **Device quirks are load-bearing.** Each of these is required by a specific
 firmware and must not be tidied away:

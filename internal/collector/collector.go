@@ -69,6 +69,7 @@ type Collector struct {
 
 	portState      *prometheus.Desc
 	portLinkStatus *prometheus.Desc
+	portLinkSpeed  *prometheus.Desc
 	portTxGoodPkt  *prometheus.Desc
 	portTxBadPkt   *prometheus.Desc
 	portRxGoodPkt  *prometheus.Desc
@@ -130,6 +131,8 @@ func New(ctx context.Context, opts Options) *Collector {
 			"State of the port (1=Enable, 0=Disable).", portLabels, nil),
 		portLinkStatus: prometheus.NewDesc("port_link_status",
 			"Link status of the port (1=Link Up, 0=Link Down).", portLabels, nil),
+		portLinkSpeed: prometheus.NewDesc("port_link_speed_mbps",
+			"Negotiated link speed in Mbps, when the firmware reports it.", portLabels, nil),
 		portTxGoodPkt: prometheus.NewDesc("port_tx_good_pkt",
 			"Number of good packets transmitted on the port.", portLabels, nil),
 		portTxBadPkt: prometheus.NewDesc("port_tx_bad_pkt",
@@ -171,8 +174,8 @@ func New(ctx context.Context, opts Options) *Collector {
 // registration time.
 func (c *Collector) Describe(ch chan<- *prometheus.Desc) {
 	for _, d := range []*prometheus.Desc{
-		c.portState, c.portLinkStatus, c.portTxGoodPkt, c.portTxBadPkt,
-		c.portRxGoodPkt, c.portRxBadPkt,
+		c.portState, c.portLinkStatus, c.portLinkSpeed,
+		c.portTxGoodPkt, c.portTxBadPkt, c.portRxGoodPkt, c.portRxBadPkt,
 		c.poeSystemConsumption, c.poeState, c.poePower, c.poeType,
 		c.poeWatts, c.poeVoltage, c.poeCurrent,
 		c.up, c.scrapeDuration, c.scrapeErrorsD, c.buildInfo,
@@ -198,6 +201,7 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 	for _, p := range res.ports {
 		emitBool(ch, c.portState, p.Enabled, p.Name)
 		emitBool(ch, c.portLinkStatus, p.LinkUp, p.Name)
+		emit(ch, c.portLinkSpeed, prometheus.GaugeValue, p.LinkSpeedMbps, p.Name)
 		emit(ch, c.portTxGoodPkt, prometheus.CounterValue, p.TxGoodPkt, p.Name)
 		emit(ch, c.portTxBadPkt, prometheus.CounterValue, p.TxBadPkt, p.Name)
 		emit(ch, c.portRxGoodPkt, prometheus.CounterValue, p.RxGoodPkt, p.Name)

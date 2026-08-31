@@ -31,18 +31,21 @@ const (
 // cannot interpret. The collector then omits that sample rather than publishing
 // a zero, which on a counter would look like a device reset.
 type Port struct {
-	Name      string
-	Enabled   *bool
-	LinkUp    *bool
-	TxGoodPkt *uint64
-	TxBadPkt  *uint64
-	RxGoodPkt *uint64
-	RxBadPkt  *uint64
+	Name    string
+	Enabled *bool
+	LinkUp  *bool
+	// LinkSpeedMbps is the negotiated speed, when the firmware reports one.
+	// Only the JSON family does; it is nil for the HTML family.
+	LinkSpeedMbps *uint64
+	TxGoodPkt     *uint64
+	TxBadPkt      *uint64
+	RxGoodPkt     *uint64
+	RxBadPkt      *uint64
 }
 
 func (p Port) hasValue() bool {
-	return p.Enabled != nil || p.LinkUp != nil || p.TxGoodPkt != nil ||
-		p.TxBadPkt != nil || p.RxGoodPkt != nil || p.RxBadPkt != nil
+	return p.Enabled != nil || p.LinkUp != nil || p.LinkSpeedMbps != nil ||
+		p.TxGoodPkt != nil || p.TxBadPkt != nil || p.RxGoodPkt != nil || p.RxBadPkt != nil
 }
 
 // PoEPort is one row of the PoE port table.

@@ -150,13 +150,17 @@ func run(ctx context.Context, args []string, stdout io.Writer) error {
 	}
 	logger.Info("configuration loaded", "path", opts.configPath, "config", cfg.String())
 
-	client := switchclient.New(switchclient.Options{
+	clientOpts := switchclient.Options{
 		Address:  cfg.Address,
 		Username: cfg.Username,
 		Password: cfg.Password,
 		Timeout:  cfg.Timeout(),
 		Logger:   logger,
-	})
+	}
+	var client collector.SwitchClient = switchclient.New(clientOpts)
+	if cfg.FirmwareOrDefault() == config.FirmwareJSON {
+		client = switchclient.NewJSON(clientOpts)
+	}
 
 	// A dedicated registry keeps the exposed set explicit and makes the
 	// exporter safe to instantiate more than once, for instance in tests.

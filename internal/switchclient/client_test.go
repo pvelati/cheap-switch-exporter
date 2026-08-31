@@ -100,12 +100,18 @@ func newFakeSwitch(t *testing.T) (*Client, *requestLog) {
 	return client, log
 }
 
-func newClientFor(t *testing.T, handler http.HandlerFunc, timeout time.Duration) *Client {
+// newTestServer starts a server and returns its base URL.
+func newTestServer(t *testing.T, handler http.HandlerFunc) string {
 	t.Helper()
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
+	return srv.URL
+}
+
+func newClientFor(t *testing.T, handler http.HandlerFunc, timeout time.Duration) *Client {
+	t.Helper()
 	return New(Options{
-		Address:  strings.TrimPrefix(srv.URL, "http://"),
+		Address:  strings.TrimPrefix(newTestServer(t, handler), "http://"),
 		Username: testUser,
 		Password: testPass,
 		Timeout:  timeout,

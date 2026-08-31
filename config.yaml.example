@@ -16,6 +16,12 @@ timeout_seconds: 5
 # Scrape the PoE pages. Accepts true/false; 1/0 also still works.
 poe: false
 
+# How the device exposes its statistics.
+#   html  the RTL8373 style web interface, scraped from /port.cgi (default)
+#   json  MaxLinear based devices serving /port_statistics.json
+# The json family also reports port_link_speed_mbps and does not support poe.
+firmware: html
+
 # Optional hardening of the exporter's own endpoint. Everything below can be
 # left out entirely.
 #

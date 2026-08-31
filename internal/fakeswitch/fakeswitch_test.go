@@ -1,6 +1,7 @@
 package fakeswitch
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -78,7 +79,12 @@ func TestEveryProfileIsServable(t *testing.T) {
 	for _, p := range Profiles() {
 		t.Run(string(p), func(t *testing.T) {
 			srv, _ := serve(t, Options{Profile: p, Delay: 10 * time.Millisecond})
-			status, body := fetch(t, srv, pathPortStats, nil)
+			// The JSON family serves a different endpoint entirely.
+			path := pathPortStats
+			if p.UsesJSON() {
+				path = pathStatsJSON
+			}
+			status, body := fetch(t, srv, path, nil)
 
 			if p == ProfileUnauthorized {
 				if status != http.StatusUnauthorized {
@@ -387,4 +393,59 @@ func TestProfilesAreUnique(t *testing.T) {
 	if ProfileStandard.SupportsPoE() {
 		t.Error("the standard profile should not report PoE support")
 	}
+}
+
+// Issue #6: the JSON firmware authorises through /authorize with separately
+// hashed credentials and then serves /port_statistics.json.
+func TestMaxLinearProfileServesJSON(t *testing.T) {
+	srv, sw := serve(t, Options{Profile: ProfileMaxLinear, Ports: 6, Seed: 3})
+
+	// Before authorising, the device answers with its login page at HTTP 200.
+	status, body := fetch(t, srv, pathStatsJSON, nil)
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want 200", status)
+	}
+	if !strings.Contains(body, "login.cgi") {
+		t.Errorf("want the login page before authorising, got:\n%s", body)
+	}
+
+	// The wrong hashes must not grant access.
+	authorise(t, srv, md5Hex("admin"), md5Hex("wrong"))
+	if _, body := fetch(t, srv, pathStatsJSON, nil); !strings.Contains(body, "login.cgi") {
+		t.Error("bad credentials must not authorise")
+	}
+
+	authorise(t, srv, md5Hex("admin"), md5Hex("admin"))
+	_, body = fetch(t, srv, pathStatsJSON, nil)
+	if !strings.Contains(body, `"PortNum": "6"`) {
+		t.Errorf("want 6 ports reported, got:\n%s", body)
+	}
+	for _, want := range []string{`"Port_1"`, `"Port_6"`, `"Port_Id"`, `"Link_Status"`, "MbpsFull"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("missing %q", want)
+		}
+	}
+	// Every value is a string on this firmware, including the counters.
+	if !strings.Contains(body, `"TxGoodPkt": "`) {
+		t.Error("counters should be quoted strings")
+	}
+	if c := sw.Counts(); c.Login != 2 || c.PortStats != 3 {
+		t.Errorf("counts = %+v, want 2 authorisations and 3 statistics reads", c)
+	}
+}
+
+// authorise calls /authorize with the given hashes.
+func authorise(t *testing.T, srv *httptest.Server, usr, pwd string) {
+	t.Helper()
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet,
+		srv.URL+pathAuthorize+"?loginusr="+usr+"&loginpwd="+pwd, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := srv.Client().Do(req)
+	if err != nil {
+		t.Fatalf("GET %s: %v", pathAuthorize, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	_, _ = io.Copy(io.Discard, resp.Body)
 }

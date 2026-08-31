@@ -50,6 +50,10 @@ const (
 	// ProfileFlaky alternates between serving data and serving the login page,
 	// which is what a device that drops sessions under load looks like.
 	ProfileFlaky Profile = "flaky"
+	// ProfileMaxLinear emulates the JSON firmware of issue #6: authorisation
+	// through /authorize with separately hashed credentials, and statistics as
+	// /port_statistics.json including the negotiated link speed.
+	ProfileMaxLinear Profile = "maxlinear"
 )
 
 // Profiles lists every emulated firmware.
@@ -57,12 +61,16 @@ func Profiles() []Profile {
 	return []Profile{
 		ProfileStandard, ProfileQuirks, ProfileKeepLink, ProfileSession,
 		ProfileBinardat, ProfilePoE, ProfileGarbage, ProfileUnauthorized,
-		ProfileSlow, ProfileFlaky,
+		ProfileSlow, ProfileFlaky, ProfileMaxLinear,
 	}
 }
 
 // SupportsPoE reports whether a profile serves the PoE pages.
 func (p Profile) SupportsPoE() bool { return p == ProfilePoE }
+
+// UsesJSON reports whether a profile serves JSON instead of HTML, which is the
+// firmware: json setting on the exporter side.
+func (p Profile) UsesJSON() bool { return p == ProfileMaxLinear }
 
 // Paths served by the emulated interfaces.
 const (
@@ -70,6 +78,8 @@ const (
 	pathPoEPorts  = "/pse_port.cgi"
 	pathPoESystem = "/pse_system.cgi"
 	pathLogin     = "/login.cgi"
+	pathAuthorize = "/authorize"
+	pathStatsJSON = "/port_statistics.json"
 )
 
 const (
@@ -252,6 +262,11 @@ func (s *Switch) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if s.profile == ProfileMaxLinear {
+		s.serveJSON(w, r)
+		return
+	}
+
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 
 	if r.URL.Path == pathLogin {
@@ -296,6 +311,74 @@ func (s *Switch) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.NotFound(w, r)
 	}
+}
+
+// serveJSON emulates the MaxLinear style firmware of issue #6. Statistics are
+// served only after /authorize has been called with the expected hashes.
+func (s *Switch) serveJSON(w http.ResponseWriter, r *http.Request) {
+	switch r.URL.Path {
+	case pathAuthorize:
+		s.bump(func(c *Counts) { c.Login++ })
+		q := r.URL.Query()
+		// The credentials are hashed separately by this firmware.
+		if q.Get("loginusr") != md5Hex(s.username) || q.Get("loginpwd") != md5Hex(s.password) {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			s.write(w, loginPage)
+			return
+		}
+		s.mu.Lock()
+		s.loggedIn = true
+		s.mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		s.write(w, `{"result":"ok"}`)
+
+	case pathStatsJSON:
+		s.bump(func(c *Counts) { c.PortStats++ })
+		s.mu.Lock()
+		authorised := s.loggedIn
+		s.mu.Unlock()
+		if !authorised {
+			// The device answers with its login page, not an error status.
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			s.write(w, loginPage)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		s.write(w, s.renderStatsJSON(s.now().Sub(s.start).Seconds()))
+
+	default:
+		http.NotFound(w, r)
+	}
+}
+
+// renderStatsJSON builds /port_statistics.json. Every value is a string and the
+// ports are top-level keys, matching what the device returns.
+func (s *Switch) renderStatsJSON(elapsed float64) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "{\n  \"PortNum\": \"%d\"", len(s.ports))
+
+	speeds := []string{"1000MbpsFull", "2500MbpsFull", "10GbpsFull", "100MbpsFull"}
+	for i, p := range s.ports {
+		status := "Disabled"
+		if p.enabled {
+			status = "Enabled"
+		}
+		link := "Down"
+		if p.linkUp {
+			link = speeds[i%len(speeds)]
+		}
+		fmt.Fprintf(&b, ",\n  \"Port_%d\": {\n", i+1)
+		fmt.Fprintf(&b, "    \"Port_Id\": \"%d\",\n", i+1)
+		fmt.Fprintf(&b, "    \"Port_Status\": \"%s\",\n", status)
+		fmt.Fprintf(&b, "    \"Link_Status\": \"%s\",\n", link)
+		fmt.Fprintf(&b, "    \"TxGoodPkt\": \"%d\",\n", p.txGood.at(elapsed))
+		fmt.Fprintf(&b, "    \"TxBadPkt\": \"%d\",\n", p.txBad.at(elapsed))
+		fmt.Fprintf(&b, "    \"RxGoodPkt\": \"%d\",\n", p.rxGood.at(elapsed))
+		fmt.Fprintf(&b, "    \"RxBadPkt\": \"%d\"\n", p.rxBad.at(elapsed))
+		b.WriteString("  }")
+	}
+	b.WriteString("\n}\n")
+	return b.String()
 }
 
 func (s *Switch) serveLogin(w http.ResponseWriter, r *http.Request) {

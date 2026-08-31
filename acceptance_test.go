@@ -73,6 +73,7 @@ func TestAcceptanceProfiles(t *testing.T) {
 	tests := []struct {
 		profile  fakeswitch.Profile
 		poe      bool
+		firmware string
 		timeout  int
 		wantUp   float64
 		contains []string
@@ -148,6 +149,19 @@ func TestAcceptanceProfiles(t *testing.T) {
 			contains: []string{`exporter_up 0`},
 			absent:   []string{`port_state{`},
 		},
+		{
+			// Issue #6: JSON firmware, authorised through /authorize.
+			profile: fakeswitch.ProfileMaxLinear, firmware: "json", timeout: 2, wantUp: 1,
+			contains: []string{
+				`port_state{port="1"} 1`,
+				`port_link_status{port="1"} 1`,
+				`port_tx_good_pkt{port="1"}`,
+				// Only this family reports a negotiated speed.
+				`port_link_speed_mbps{port="1"}`,
+				`exporter_up 1`,
+			},
+			absent: []string{`poe_port_watts`},
+		},
 	}
 
 	for _, tc := range tests {
@@ -159,10 +173,14 @@ func TestAcceptanceProfiles(t *testing.T) {
 				Delay:   3 * time.Second,
 			})
 			listenAddr := freeAddr(t)
+			firmware := tc.firmware
+			if firmware == "" {
+				firmware = "html"
+			}
 			configPath := writeConfig(t, fmt.Sprintf(
 				"address: %q\nusername: admin\npassword: admin\n"+
-					"poll_rate_seconds: 0\ntimeout_seconds: %d\npoe: %t\n",
-				switchAddr, tc.timeout, tc.poe))
+					"poll_rate_seconds: 0\ntimeout_seconds: %d\npoe: %t\nfirmware: %s\n",
+				switchAddr, tc.timeout, tc.poe, firmware))
 
 			startExporter(t, configPath, listenAddr)
 			body := scrape(t, listenAddr)
@@ -408,4 +426,54 @@ func TestAcceptanceConcurrentScrapes(t *testing.T) {
 			t.Errorf("concurrent scrape %d: %s", i, problem)
 		}
 	}
+}
+
+// Only the JSON firmware reports a negotiated link speed, so the metric must be
+// present for it and absent for the HTML family rather than reported as zero.
+func TestAcceptanceLinkSpeedOnlyWhereReported(t *testing.T) {
+	for _, tc := range []struct {
+		profile  fakeswitch.Profile
+		firmware string
+		wantHave bool
+	}{
+		{fakeswitch.ProfileMaxLinear, "json", true},
+		{fakeswitch.ProfileStandard, "html", false},
+	} {
+		t.Run(string(tc.profile), func(t *testing.T) {
+			clearEnv(t)
+			switchAddr, _ := startFake(t, fakeswitch.Options{Profile: tc.profile, Seed: 13})
+			listenAddr := freeAddr(t)
+			configPath := writeConfig(t, fmt.Sprintf(
+				"address: %q\nusername: admin\npassword: admin\n"+
+					"poll_rate_seconds: 0\ntimeout_seconds: 2\nfirmware: %s\n",
+				switchAddr, tc.firmware))
+			startExporter(t, configPath, listenAddr)
+
+			body := scrape(t, listenAddr)
+			_, have := sample(t, body, "port_link_speed_mbps")
+			if have != tc.wantHave {
+				t.Errorf("port_link_speed_mbps present = %t, want %t", have, tc.wantHave)
+			}
+			// Port 1 is the first linked port in the emulator and negotiates 1G.
+			if tc.wantHave && !strings.Contains(body, `port_link_speed_mbps{port="1"} 1000`) {
+				t.Errorf("want port 1 to report 1000 Mbps, got:\n%s",
+					grepLines(body, "port_link_speed_mbps"))
+			}
+			// A port with no link must report no speed at all, not zero.
+			if tc.wantHave && strings.Contains(body, `port_link_speed_mbps{port="2"}`) {
+				t.Error("port 2 has no link and must not report a speed")
+			}
+		})
+	}
+}
+
+// grepLines returns the exposition lines containing needle, for error messages.
+func grepLines(body, needle string) string {
+	var out []string
+	for _, line := range strings.Split(body, "\n") {
+		if strings.Contains(line, needle) && !strings.HasPrefix(line, "#") {
+			out = append(out, "  "+line)
+		}
+	}
+	return strings.Join(out, "\n")
 }

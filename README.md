@@ -21,6 +21,7 @@ Many budget-friendly network switches do not support standard SNMP monitoring. T
 | Horaco | HC-SWTGW124AS | Verified | @arthurbarton |
 | KeepLink | KP-9000-9XHPML-X | Verified | @jfallot and @adamchabin |
 | Sodola | SL-SWTG124AS | Verified | @dennyreiter |
+| Goodtop | ZX310S-8T2XS | Untested, `firmware: json` | @jauling |
 
 ## Installation
 
@@ -105,6 +106,7 @@ password: "password"             # Web interface password
 poll_rate_seconds: 10            # Minimum delay between two polls of the switch
 timeout_seconds: 5               # Per-request timeout
 poe: false                       # Scrape the PoE pages (1/0 also accepted)
+firmware: html                   # html (default) or json, see below
 ```
 
 Unknown keys are rejected, so a misspelled option fails at startup instead of being ignored.
@@ -137,6 +139,26 @@ web:
 
 TLS is served with a minimum version of TLS 1.2. `/healthz` is intentionally left unauthenticated so container health checks keep working. When the endpoint is bound to a non-loopback address without authentication, the exporter logs a warning at startup.
 
+### Firmware families
+
+Two device families are supported. `firmware: html` is the default and covers
+every device in the table above: an RTL8373 style web interface whose statistics
+are scraped from `/port.cgi`.
+
+`firmware: json` covers MaxLinear based devices that authenticate through
+`/authorize` and serve `/port_statistics.json`, reported for the Goodtop
+ZX310S-8T2XS in [issue #6](https://github.com/pvelati/cheap-switch-exporter/issues/6).
+Two differences worth knowing:
+
+- It reports the negotiated link speed, so `port_link_speed_mbps` is published.
+  The HTML family does not expose it and omits the metric.
+- No PoE endpoint has been reported for it, so `poe: true` together with
+  `firmware: json` is refused at startup rather than failing every scrape.
+
+This family is implemented from the protocol and payload in the issue and
+verified against an emulated device. Nobody has confirmed it against real
+hardware yet; reports welcome.
+
 ### Polling behaviour
 
 `poll_rate_seconds` is the minimum delay between two polls of the switch. Scrapes arriving inside that window are answered from the previous result, including failures. That keeps a redundant pair of Prometheus servers, or a short scrape interval, from overwhelming a device whose web interface serves one session at a time. Set it to `0` to poll on every scrape.
@@ -153,6 +175,7 @@ The exporter now authenticates lazily: it requests the statistics page, and only
 
 - `port_state`: Port enabled/disabled status (1=Enable, 0=Disable)
 - `port_link_status`: Port link up/down status (1=Link Up, 0=Link Down)
+- `port_link_speed_mbps`: Negotiated speed in Mbps, only with `firmware: json`
 - `port_tx_good_pkt`: Transmitted good packets
 - `port_tx_bad_pkt`: Transmitted bad packets
 - `port_rx_good_pkt`: Received good packets
@@ -244,6 +267,7 @@ go run ./cmd/fakeswitch -list-profiles
 | `unauthorized` | HTTP 401 |
 | `slow` | Never answers in time |
 | `flaky` | Drops the session every other request |
+| `maxlinear` | The JSON firmware of issue #6, with negotiated link speeds |
 
 ### Test layers
 

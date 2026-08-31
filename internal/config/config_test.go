@@ -367,3 +367,47 @@ func TestCheckPermissions(t *testing.T) {
 		t.Errorf("CheckPermissions(absent) = %v, want nil", err)
 	}
 }
+
+func TestFirmwareSelection(t *testing.T) {
+	clearEnv(t)
+
+	// Absent means the HTML family, which is what every earlier release did.
+	path := writeConfig(t, "address: h\nusername: u\npassword: p\n")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.FirmwareOrDefault() != FirmwareHTML {
+		t.Errorf("default firmware = %q, want %q", cfg.FirmwareOrDefault(), FirmwareHTML)
+	}
+
+	for _, spelling := range []string{"json", "JSON", " json "} {
+		path := writeConfig(t, "address: h\nusername: u\npassword: p\nfirmware: \""+spelling+"\"\n")
+		cfg, err := Load(path)
+		if err != nil {
+			t.Fatalf("Load(%q): %v", spelling, err)
+		}
+		if cfg.FirmwareOrDefault() != FirmwareJSON {
+			t.Errorf("firmware %q resolved to %q", spelling, cfg.FirmwareOrDefault())
+		}
+	}
+
+	path = writeConfig(t, "address: h\nusername: u\npassword: p\nfirmware: xml\n")
+	if _, err := Load(path); err == nil {
+		t.Error("want an error for an unknown firmware")
+	}
+}
+
+// No PoE endpoint has been reported for the JSON family, so asking for it would
+// fail every scrape. Better to refuse at startup.
+func TestFirmwareJSONRejectsPoE(t *testing.T) {
+	clearEnv(t)
+	path := writeConfig(t, "address: h\nusername: u\npassword: p\nfirmware: json\npoe: true\n")
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("want an error for poe with firmware: json")
+	}
+	if !strings.Contains(err.Error(), "poe is not supported") {
+		t.Errorf("err = %v, want it to explain the combination", err)
+	}
+}
