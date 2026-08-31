@@ -1,0 +1,48 @@
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  default: standard
+  enable:
+    - bodyclose
+    - copyloopvar
+    - errorlint
+    - gocritic
+    - gosec
+    - misspell
+    - nilerr
+    - noctx
+    - revive
+    - unconvert
+    - unparam
+    - usestdlibvars
+    - wastedassign
+
+  settings:
+    gosec:
+      excludes:
+        # The switch web interface authenticates with an MD5 token; the exporter
+        # has to reproduce it and cannot choose a stronger hash.
+        - G401
+        - G501
+    revive:
+      rules:
+        - name: exported
+        - name: package-comments
+        - name: error-strings
+        - name: context-as-argument
+
+  exclusions:
+    rules:
+      # Table-driven tests trip several style linters for no benefit.
+      - path: _test\.go$
+        linters:
+          - errcheck
+          - gosec
+          - unparam
+
+formatters:
+  enable:
+    - gofmt

@@ -1,59 +1,56 @@
-# Use a specific alpine version for better reproducibility
-FROM golang:1.23.5-alpine3.21 AS build
+# syntax=docker/dockerfile:1
 
-# Set metadata and maintainer
+# BUILDPLATFORM keeps the toolchain native while cross-compiling, so building
+# for a Raspberry Pi from an amd64 host does not run Go under emulation.
+#
+# Pin a patched Go release, not just the minor line: the go directive in go.mod
+# is only a minimum, and the standard library in an early 1.25 patch carries
+# advisories that would otherwise end up in the shipped binary. Verified with
+# govulncheck under this exact toolchain.
+FROM --platform=$BUILDPLATFORM golang:1.25.14-alpine3.24 AS build
+
+WORKDIR /app
+
+# Dependencies first so the layer is reused whenever only sources change.
+COPY go.mod go.sum ./
+RUN go mod download && go mod verify
+
+COPY . .
+
+# TARGETOS/TARGETARCH are provided by buildx; the defaults keep a plain
+# "docker build" working. VERSION is injected instead of being derived from git,
+# which lets .dockerignore keep the .git directory out of the build context.
+ARG TARGETOS
+ARG TARGETARCH
+ARG VERSION=dev
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} \
+    go build \
+    -trimpath \
+    -ldflags="-w -s -X main.Version=${VERSION}" \
+    -o /out/cheap-switch-exporter \
+    .
+
+FROM alpine:3.24
+
 LABEL maintainer="Paolo Velati <paolo.velati@gmail.com>"
 LABEL org.opencontainers.image.source="https://github.com/pvelati/cheap-switch-exporter"
 LABEL org.opencontainers.image.description="Prometheus Exporter for cheap switch boxes without SNMP"
+LABEL org.opencontainers.image.licenses="MIT"
 
-# Install system dependencies
-RUN apk add --no-cache git
-
-# Set working directory
-WORKDIR /app
-
-# Copy only go mod and sum files first to leverage Docker cache
-COPY go.mod go.sum ./
-
-# Download dependencies with caching
-RUN go mod download && go mod verify
-
-# Copy source code
-COPY . .
-
-# Build the application with more robust flags
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
-    go build \
-    -ldflags="-w -s -X 'main.Version=$(git describe --tags --always --dirty)'" \
-    -o /bin/cheap-switch-exporter
-
-# Final stage with alpine
-FROM alpine:3.21
-
-# Create non-root user
 RUN adduser -D -u 1000 appuser
 
-# Copy the binary
-COPY --from=build /bin/cheap-switch-exporter /bin/cheap-switch-exporter
+COPY --from=build /out/cheap-switch-exporter /bin/cheap-switch-exporter
+COPY config.yaml.example /etc/cheap-switch-exporter/config.yaml.example
 
-# Copy config template
-COPY --from=build /app/config.yaml.example /etc/cheap-switch-exporter/config.yaml.example
-
-# Use non-root user
 USER appuser
 
-# Default config volume
 VOLUME ["/etc/cheap-switch-exporter"]
-
-# Expose metrics port
 EXPOSE 8080
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s \
-  CMD wget -q -O- http://localhost:8080/metrics || exit 1
+# Liveness only: /healthz does not poll the switch, so the health check cannot
+# turn into a second scraper hammering the device.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=5s \
+    CMD wget -q -O- http://127.0.0.1:8080/healthz || exit 1
 
-# Set entrypoint with config path
 ENTRYPOINT ["/bin/cheap-switch-exporter"]
-
-# Default arguments can be overridden
 CMD ["-c", "/etc/cheap-switch-exporter/config.yaml"]

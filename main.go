@@ -1,609 +1,348 @@
+// Command cheap-switch-exporter exposes port and PoE statistics of low-cost,
+// SNMP-less network switches as Prometheus metrics.
 package main
 
 import (
-	"crypto/md5"
-	"encoding/hex"
+	"context"
+	"crypto/sha256"
+	"crypto/subtle"
+	"crypto/tls"
+	"errors"
+	"flag"
 	"fmt"
-	"log"
+	"html"
+	"io"
+	"log/slog"
+	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"os/signal"
-	"strconv"
+	"runtime"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 
-	"github.com/PuerkitoBio/goquery"
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/promauto"
+	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"gopkg.in/yaml.v3"
+
+	"cheap-switch-exporter/internal/collector"
+	"cheap-switch-exporter/internal/config"
+	"cheap-switch-exporter/internal/switchclient"
 )
 
-type Config struct {
-	Address  string `yaml:"address"`
-	Username string `yaml:"username"`
-	Password string `yaml:"password"`
-	PollRate int    `yaml:"poll_rate_seconds"`
-	Timeout  int    `yaml:"timeout_seconds"`
-	PoE      int    `yaml:"poe"`
-}
+// Version is set at build time with -ldflags "-X main.Version=...".
+var Version = "dev"
 
-type Port struct {
-	Name       string `json:"port"`
-	State      string `json:"state"`
-	LinkStatus string `json:"link_status"`
-	TxGoodPkt  uint64 `json:"tx_good_pkt"`
-	TxBadPkt   uint64 `json:"tx_bad_pkt"`
-	RxGoodPkt  uint64 `json:"rx_good_pkt"`
-	RxBadPkt   uint64 `json:"rx_bad_pkt"`
-}
-
-type PortStatistics struct {
-	Ports []Port `json:"port_statistics"`
-}
-
-type PortPoE struct {
-	Name    string  `json:"port"`
-	State   string  `json:"state"`
-	Power   string  `json:"power"` // "On" / "Off"
-	Type    string  `json:"type"`  // "-" or "Class1"/"Class2"/...
-	Watts   float64 `json:"watts"`
-	Voltage float64 `json:"voltage"`
-	Current float64 `json:"current"`
-}
-
-type PoEStatistics struct {
-	Ports []PortPoE `json:"ports"`
-}
-
-type PoESystem struct {
-	Consumption float64 `json:"consumption"`
-}
-
-type PortStatsCollector struct {
-	config               Config
-	portState            *prometheus.Desc
-	portLinkStatus       *prometheus.Desc
-	portTxGoodPkt        *prometheus.Desc
-	portTxBadPkt         *prometheus.Desc
-	portRxGoodPkt        *prometheus.Desc
-	portRxBadPkt         *prometheus.Desc
-	lastScrapeDuration   prometheus.Gauge
-	scrapeErrorsTotal    prometheus.Counter
-	poeSystemConsumption *prometheus.Desc
-	poeState             *prometheus.Desc
-	poePower             *prometheus.Desc
-	poeType              *prometheus.Desc
-	poeWatts             *prometheus.Desc
-	poeVoltage           *prometheus.Desc
-	poeCurrent           *prometheus.Desc
-	mutex                sync.Mutex
-}
-
-func NewPortStatsCollector(config Config) *PortStatsCollector {
-	return &PortStatsCollector{
-		config: config,
-		portState: prometheus.NewDesc(
-			"port_state",
-			"State of the port",
-			[]string{"port"}, nil,
-		),
-		portLinkStatus: prometheus.NewDesc(
-			"port_link_status",
-			"Link status of the port",
-			[]string{"port"}, nil,
-		),
-		portTxGoodPkt: prometheus.NewDesc(
-			"port_tx_good_pkt",
-			"Number of good packets transmitted on the port",
-			[]string{"port"}, nil,
-		),
-		portTxBadPkt: prometheus.NewDesc(
-			"port_tx_bad_pkt",
-			"Number of bad packets transmitted on the port",
-			[]string{"port"}, nil,
-		),
-		portRxGoodPkt: prometheus.NewDesc(
-			"port_rx_good_pkt",
-			"Number of good packets received on the port",
-			[]string{"port"}, nil,
-		),
-		portRxBadPkt: prometheus.NewDesc(
-			"port_rx_bad_pkt",
-			"Number of bad packets received on the port",
-			[]string{"port"}, nil,
-		),
-		poeSystemConsumption: prometheus.NewDesc(
-			"poe_system_consumption_watts",
-			"Total PoE consumption in watts",
-			nil, nil,
-		),
-		poeState: prometheus.NewDesc(
-			"poe_port_state",
-			"State of the PoE port (1=Enable, 0=Disable)",
-			[]string{"port"}, nil,
-		),
-		poePower: prometheus.NewDesc(
-			"poe_port_power_on",
-			"PoE port power on/off (1=On, 0=Off)",
-			[]string{"port"}, nil,
-		),
-		poeType: prometheus.NewDesc(
-			"poe_port_type",
-			"PoE port type class (1-4, 0=none)",
-			[]string{"port"}, nil,
-		),
-		poeWatts: prometheus.NewDesc(
-			"poe_port_watts",
-			"PoE port power consumption in watts",
-			[]string{"port"}, nil,
-		),
-		poeVoltage: prometheus.NewDesc(
-			"poe_port_voltage",
-			"PoE port voltage in volts",
-			[]string{"port"}, nil,
-		),
-		poeCurrent: prometheus.NewDesc(
-			"poe_port_current_ma",
-			"PoE port current in mA",
-			[]string{"port"}, nil,
-		),
-		lastScrapeDuration: promauto.NewGauge(prometheus.GaugeOpts{
-			Name: "exporter_last_scrape_duration_seconds",
-			Help: "Duration of the last scrape",
-		}),
-		scrapeErrorsTotal: promauto.NewCounter(prometheus.CounterOpts{
-			Name: "exporter_scrape_errors_total",
-			Help: "Total number of scrape errors",
-		}),
-	}
-}
-
-func (c *PortStatsCollector) Describe(ch chan<- *prometheus.Desc) {
-	ch <- c.portState
-	ch <- c.portLinkStatus
-	ch <- c.portTxGoodPkt
-	ch <- c.portTxBadPkt
-	ch <- c.portRxGoodPkt
-	ch <- c.portRxBadPkt
-}
-
-func (c *PortStatsCollector) Collect(ch chan<- prometheus.Metric) {
-	c.mutex.Lock()
-	defer c.mutex.Unlock()
-
-	start := time.Now()
-	stats, err := fetchPortStatistics(c.config)
-	if err != nil {
-		c.scrapeErrorsTotal.Inc()
-		log.Printf("Error fetching port statistics: %v", err)
-		return
-	}
-
-	for _, port := range stats.Ports {
-		ch <- prometheus.MustNewConstMetric(
-			c.portState, prometheus.GaugeValue,
-			stateToFloat(port.State), port.Name,
-		)
-		ch <- prometheus.MustNewConstMetric(
-			c.portLinkStatus, prometheus.GaugeValue,
-			linkStatusToFloat(port.LinkStatus), port.Name,
-		)
-		ch <- prometheus.MustNewConstMetric(
-			c.portTxGoodPkt, prometheus.CounterValue,
-			float64(port.TxGoodPkt), port.Name,
-		)
-		ch <- prometheus.MustNewConstMetric(
-			c.portTxBadPkt, prometheus.CounterValue,
-			float64(port.TxBadPkt), port.Name,
-		)
-		ch <- prometheus.MustNewConstMetric(
-			c.portRxGoodPkt, prometheus.CounterValue,
-			float64(port.RxGoodPkt), port.Name,
-		)
-		ch <- prometheus.MustNewConstMetric(
-			c.portRxBadPkt, prometheus.CounterValue,
-			float64(port.RxBadPkt), port.Name,
-		)
-	}
-
-	if c.config.PoE == 1 {
-		poeSystem, err := fetchPoESystem(c.config)
-		if err != nil {
-			c.scrapeErrorsTotal.Inc()
-			log.Printf("Error fetching PoE system: %v", err)
-		} else {
-			ch <- prometheus.MustNewConstMetric(
-				c.poeSystemConsumption,
-				prometheus.GaugeValue,
-				poeSystem.Consumption,
-			)
-		}
-
-		poeStats, err := fetchPoEPorts(c.config)
-		if err != nil {
-			c.scrapeErrorsTotal.Inc()
-			log.Printf("Error fetching PoE port statistics: %v", err)
-			return
-		}
-
-		for _, port := range poeStats.Ports {
-			portName := normalizePortName(port.Name)
-
-			ch <- prometheus.MustNewConstMetric(
-				c.poeState, prometheus.GaugeValue,
-				stateToFloat(port.State), portName,
-			)
-			ch <- prometheus.MustNewConstMetric(
-				c.poePower, prometheus.GaugeValue,
-				powerToFloat(port.Power), portName,
-			)
-			ch <- prometheus.MustNewConstMetric(
-				c.poeType, prometheus.GaugeValue,
-				typeToFloat(port.Type), portName,
-			)
-			ch <- prometheus.MustNewConstMetric(
-				c.poeWatts, prometheus.GaugeValue,
-				port.Watts, portName,
-			)
-			ch <- prometheus.MustNewConstMetric(
-				c.poeVoltage, prometheus.GaugeValue,
-				port.Voltage, portName,
-			)
-			ch <- prometheus.MustNewConstMetric(
-				c.poeCurrent, prometheus.GaugeValue,
-				port.Current, portName,
-			)
-		}
-	}
-
-	duration := time.Since(start).Seconds()
-	c.lastScrapeDuration.Set(duration)
-}
+const (
+	defaultConfigPath = "config.yaml"
+	defaultListenAddr = ":8080"
+	shutdownTimeout   = 10 * time.Second
+	// healthPath is reserved: container health checks and Kubernetes probes
+	// depend on it answering without touching the switch.
+	healthPath = "/healthz"
+)
 
 func main() {
-	// Read configuration
-	config, err := readConfig("config.yaml")
-	if err != nil {
-		log.Fatalf("Error reading configuration: %v", err)
+	// The work happens in a function that returns, so the deferred signal
+	// cleanup runs before the process exits.
+	os.Exit(realMain())
+}
+
+func realMain() int {
+	// The signal context lets an in-flight scrape finish while new connections
+	// are refused, instead of dropping requests on the floor.
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	if err := run(ctx, os.Args[1:], os.Stdout); err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "cheap-switch-exporter: %v\n", err)
+		return 1
+	}
+	return 0
+}
+
+type options struct {
+	configPath    string
+	listenAddr    string
+	telemetryPath string
+	logLevel      string
+	logFormat     string
+	showVersion   bool
+	// deprecated collects notices to log once the logger exists.
+	deprecated []string
+}
+
+func parseFlags(args []string, out io.Writer) (options, error) {
+	var opts options
+	var legacyPort string
+
+	fs := flag.NewFlagSet("cheap-switch-exporter", flag.ContinueOnError)
+	fs.SetOutput(out)
+	// -c is kept as a short alias because the container image has always
+	// invoked the binary with it.
+	fs.StringVar(&opts.configPath, "c", defaultConfigPath, "Path to the configuration file (shorthand).")
+	fs.StringVar(&opts.configPath, "config", defaultConfigPath, "Path to the configuration file.")
+	fs.StringVar(&opts.configPath, "config-file", defaultConfigPath, "Path to the configuration file (alias of -config).")
+	fs.StringVar(&opts.listenAddr, "web.listen-address", defaultListenAddr, "Address to listen on for the metrics endpoint.")
+	fs.StringVar(&legacyPort, "port", "", "Deprecated alias of -web.listen-address.")
+	fs.StringVar(&opts.telemetryPath, "web.telemetry-path", "/metrics", "Path under which to expose the metrics.")
+	fs.StringVar(&opts.logLevel, "log.level", "info", "Log level: debug, info, warn or error.")
+	fs.StringVar(&opts.logFormat, "log.format", "text", "Log format: text or json.")
+	fs.BoolVar(&opts.showVersion, "version", false, "Print the version and exit.")
+
+	if err := fs.Parse(args); err != nil {
+		return options{}, err
+	}
+	if fs.NArg() > 0 {
+		return options{}, fmt.Errorf("unexpected positional arguments: %v", fs.Args())
 	}
 
-	// Set default values if not specified
-	if config.PollRate == 0 {
-		config.PollRate = 10 // Default 10 seconds
-	}
-	if config.Timeout == 0 {
-		config.Timeout = 5 // Default 5 seconds
-	}
-
-	// Validate configuration
-	if config.Address == "" || config.Username == "" || config.Password == "" {
-		log.Fatal("Missing required configuration fields")
-	}
-
-	// Create custom collector
-	collector := NewPortStatsCollector(config)
-	prometheus.MustRegister(collector)
-
-	// Start Prometheus HTTP server
-	http.Handle("/metrics", promhttp.Handler())
-	go func() {
-		log.Println("Starting Prometheus exporter on: 8080/metrics")
-		if err := http.ListenAndServe(":8080", nil); err != nil {
-			log.Fatalf("HTTP server error: %v", err)
+	provided := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { provided[f.Name] = true })
+	if provided["port"] {
+		if provided["web.listen-address"] {
+			return options{}, errors.New("-port is a deprecated alias of -web.listen-address; set only one")
 		}
+		opts.listenAddr = legacyPort
+		opts.deprecated = append(opts.deprecated,
+			"-port is deprecated, use -web.listen-address")
+	}
+
+	if !strings.HasPrefix(opts.telemetryPath, "/") {
+		return options{}, fmt.Errorf("web.telemetry-path must start with '/', got %q", opts.telemetryPath)
+	}
+	// Serving metrics from the health path would shadow the liveness probe and
+	// make every health check poll the switch.
+	if opts.telemetryPath == healthPath {
+		return options{}, fmt.Errorf("web.telemetry-path must not be %s, that path is reserved for the liveness probe", healthPath)
+	}
+	return opts, nil
+}
+
+func run(ctx context.Context, args []string, stdout io.Writer) error {
+	opts, err := parseFlags(args, stdout)
+	if err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return nil
+		}
+		return err
+	}
+	if opts.showVersion {
+		_, _ = fmt.Fprintf(stdout, "cheap-switch-exporter %s (%s)\n", Version, runtime.Version())
+		return nil
+	}
+
+	logger, err := newLogger(stdout, opts.logLevel, opts.logFormat)
+	if err != nil {
+		return err
+	}
+	for _, notice := range opts.deprecated {
+		logger.Warn("deprecated flag", "detail", notice)
+	}
+
+	cfg, err := config.Load(opts.configPath)
+	if err != nil {
+		return err
+	}
+	if err := config.CheckPermissions(opts.configPath); err != nil {
+		logger.Warn("insecure configuration file permissions", "err", err)
+	}
+	logger.Info("configuration loaded", "path", opts.configPath, "config", cfg.String())
+
+	clientOpts := switchclient.Options{
+		Address:  cfg.Address,
+		Username: cfg.Username,
+		Password: cfg.Password,
+		Timeout:  cfg.Timeout(),
+		Logger:   logger,
+	}
+	var client collector.SwitchClient = switchclient.New(clientOpts)
+	if cfg.FirmwareOrDefault() == config.FirmwareJSON {
+		client = switchclient.NewJSON(clientOpts)
+	}
+
+	// A dedicated registry keeps the exposed set explicit and makes the
+	// exporter safe to instantiate more than once, for instance in tests.
+	registry := prometheus.NewRegistry()
+	registry.MustRegister(
+		collectors.NewGoCollector(),
+		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
+		collector.New(ctx, collector.Options{
+			Client:      client,
+			Logger:      logger,
+			PoE:         bool(cfg.PoE),
+			Timeout:     cfg.Timeout(),
+			MinInterval: cfg.PollRate(),
+			Version:     Version,
+		}),
+	)
+
+	srv := newServer(opts, cfg, registry, logger)
+	return serve(ctx, srv, cfg, logger)
+}
+
+func newLogger(w io.Writer, level, format string) (*slog.Logger, error) {
+	var lvl slog.Level
+	if err := lvl.UnmarshalText([]byte(level)); err != nil {
+		return nil, fmt.Errorf("invalid log.level %q: %w", level, err)
+	}
+	handlerOpts := &slog.HandlerOptions{Level: lvl}
+
+	switch format {
+	case "text", "logfmt":
+		return slog.New(slog.NewTextHandler(w, handlerOpts)), nil
+	case "json":
+		return slog.New(slog.NewJSONHandler(w, handlerOpts)), nil
+	default:
+		return nil, fmt.Errorf("invalid log.format %q: want text or json", format)
+	}
+}
+
+func newServer(opts options, cfg config.Config, registry *prometheus.Registry, logger *slog.Logger) *http.Server {
+	errLog := slog.NewLogLogger(logger.Handler(), slog.LevelError)
+
+	// A scrape performs up to three sequential requests to the switch, so the
+	// handler and write budgets have to be derived from the device timeout.
+	scrapeBudget := 3*cfg.Timeout() + 2*time.Second
+
+	handler := promhttp.HandlerFor(registry, promhttp.HandlerOpts{
+		ErrorLog: errLog,
+		// Serve whatever could be collected instead of failing the whole
+		// scrape when a single collector misbehaves.
+		ErrorHandling: promhttp.ContinueOnError,
+		Registry:      registry,
+		// The device is shielded by the collector mutex and by
+		// poll_rate_seconds, not by this limit: it only decides when the
+		// exporter starts refusing its own scrapers. Keep it well above any
+		// realistic number of Prometheus servers plus health checks.
+		MaxRequestsInFlight: 10,
+		Timeout:             scrapeBudget,
+		// Deliberately not enabling OpenMetrics. It requires counter series to
+		// be named <name>_total; the historical names here are not, so the
+		// OpenMetrics encoder would have to downgrade every packet counter to
+		// type "unknown". Prometheus prefers OpenMetrics when it is offered, so
+		// enabling it would lose the counter type on every scrape. Renaming the
+		// counters is the real fix and needs a major version.
+		EnableOpenMetrics: false,
+	})
+	handler = promhttp.InstrumentMetricHandler(registry, handler)
+	if cfg.AuthEnabled() {
+		handler = basicAuth(handler, cfg.Web.AuthUsername, cfg.Web.AuthPassword)
+	}
+
+	mux := http.NewServeMux()
+	mux.Handle(opts.telemetryPath, handler)
+	// Both extra routes are registered defensively: http.ServeMux panics on a
+	// duplicate pattern, and the telemetry path comes from a flag.
+	if opts.telemetryPath != healthPath {
+		// Liveness only: it must not touch the switch, otherwise a container
+		// health check would poll the device forever.
+		mux.HandleFunc(healthPath, func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			_, _ = io.WriteString(w, "ok\n")
+		})
+	}
+	if opts.telemetryPath != "/" {
+		mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/" {
+				http.NotFound(w, r)
+				return
+			}
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			// The path is operator supplied; escape it rather than trusting it.
+			_, _ = fmt.Fprintf(w, `<!DOCTYPE html><html><head><title>Cheap Switch Exporter</title></head>
+<body><h1>Cheap Switch Exporter</h1><p><a href="%s">Metrics</a></p></body></html>`,
+				html.EscapeString(opts.telemetryPath))
+		})
+	}
+
+	return &http.Server{
+		Addr:    opts.listenAddr,
+		Handler: mux,
+		// Bounded read phases close the door on slow-header (Slowloris) clients.
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      scrapeBudget + 5*time.Second,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    1 << 16,
+		ErrorLog:          errLog,
+		TLSConfig:         &tls.Config{MinVersion: tls.VersionTLS12},
+	}
+}
+
+func serve(ctx context.Context, srv *http.Server, cfg config.Config, logger *slog.Logger) error {
+	scheme := "http"
+	if cfg.TLSEnabled() {
+		scheme = "https"
+	}
+	logger.Info("starting exporter", "version", Version, "address", srv.Addr, "scheme", scheme)
+	if !cfg.AuthEnabled() && !isLoopback(srv.Addr) {
+		logger.Warn("metrics endpoint is exposed without authentication; " +
+			"set web.auth_username and web.auth_password, or bind to 127.0.0.1")
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		if cfg.TLSEnabled() {
+			errCh <- srv.ListenAndServeTLS(cfg.Web.TLSCertFile, cfg.Web.TLSKeyFile)
+			return
+		}
+		errCh <- srv.ListenAndServe()
 	}()
 
-	// Graceful shutdown handling
-	stop := make(chan os.Signal, 1)
-	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
-
-	<-stop
-	log.Println("Shutting down...")
-}
-
-func fetchPortStatistics(config Config) (PortStatistics, error) {
-	baseURL := "http://" + config.Address + "/port.cgi"
-	params := url.Values{}
-	params.Set("page", "stats")
-
-	formParams := url.Values{}
-	formParams.Set("username", config.Username)
-	formParams.Set("password", config.Password)
-	formParams.Set("language", "EN")
-	formParams.Set("Response", getMD5Hash(config.Username+config.Password))
-
-	client := &http.Client{
-		Timeout: time.Duration(config.Timeout) * time.Second,
-	}
-
-	req, err := http.NewRequest("GET", baseURL, strings.NewReader(formParams.Encode()))
-	log.Printf("Request: %+v", req)
-	if err != nil {
-		return PortStatistics{}, fmt.Errorf("error creating request: %w", err)
-	}
-
-	cookieValue := getMD5Hash(config.Username + config.Password)
-	req.AddCookie(&http.Cookie{Name: "admin", Value: cookieValue})
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	// With KeepLink KP-9000-9XHML-X, the Referer header is required or the response will be empty
-	req.Header.Set("Referer", fmt.Sprintf("http://%s/menu.cgi", config.Address))
-	req.URL.RawQuery = params.Encode()
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return PortStatistics{}, fmt.Errorf("error sending request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	doc, err := goquery.NewDocumentFromReader(resp.Body)
-	if err != nil {
-		return PortStatistics{}, fmt.Errorf("error parsing HTML: %w", err)
-	}
-
-	return parsePortStatistics(doc)
-}
-
-func fetchPoESystem(config Config) (PoESystem, error) {
-	baseURL := "http://" + config.Address + "/pse_system.cgi"
-	params := url.Values{}
-	params.Set("page", "stats")
-
-	formParams := url.Values{}
-	formParams.Set("username", config.Username)
-	formParams.Set("password", config.Password)
-	formParams.Set("language", "EN")
-	formParams.Set("Response", getMD5Hash(config.Username+config.Password))
-
-	client := &http.Client{
-		Timeout: time.Duration(config.Timeout) * time.Second,
-	}
-
-	req, err := http.NewRequest("GET", baseURL, strings.NewReader(formParams.Encode()))
-	if err != nil {
-		return PoESystem{}, fmt.Errorf("error creating request: %w", err)
-	}
-
-	cookieValue := getMD5Hash(config.Username + config.Password)
-	req.AddCookie(&http.Cookie{Name: "admin", Value: cookieValue})
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("Referer", fmt.Sprintf("http://%s/menu.cgi", config.Address))
-	req.URL.RawQuery = params.Encode()
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return PoESystem{}, fmt.Errorf("error sending request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	doc, err := goquery.NewDocumentFromReader(resp.Body)
-	if err != nil {
-		return PoESystem{}, fmt.Errorf("error parsing HTML: %w", err)
-	}
-
-	return parsePoESystem(doc)
-}
-
-func fetchPoEPorts(config Config) (PoEStatistics, error) {
-	baseURL := "http://" + config.Address + "/pse_port.cgi"
-	params := url.Values{}
-	params.Set("page", "stats")
-
-	formParams := url.Values{}
-	formParams.Set("username", config.Username)
-	formParams.Set("password", config.Password)
-	formParams.Set("language", "EN")
-	formParams.Set("Response", getMD5Hash(config.Username+config.Password))
-
-	client := &http.Client{
-		Timeout: time.Duration(config.Timeout) * time.Second,
-	}
-
-	req, err := http.NewRequest("GET", baseURL, strings.NewReader(formParams.Encode()))
-	if err != nil {
-		return PoEStatistics{}, fmt.Errorf("error creating request: %w", err)
-	}
-
-	cookieValue := getMD5Hash(config.Username + config.Password)
-	req.AddCookie(&http.Cookie{Name: "admin", Value: cookieValue})
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("Referer", fmt.Sprintf("http://%s/menu.cgi", config.Address))
-	req.URL.RawQuery = params.Encode()
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return PoEStatistics{}, fmt.Errorf("error sending request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	doc, err := goquery.NewDocumentFromReader(resp.Body)
-	if err != nil {
-		return PoEStatistics{}, fmt.Errorf("error parsing HTML: %w", err)
-	}
-
-	return parsePoEPorts(doc)
-}
-
-func parsePortStatistics(doc *goquery.Document) (PortStatistics, error) {
-	var stats PortStatistics
-
-	doc.Find("table").Find("tr").Each(func(i int, s *goquery.Selection) {
-
-		if i != 0 {
-			port := Port{}
-			s.Find("td").Each(func(j int, td *goquery.Selection) {
-
-				cellValue := strings.TrimSpace(td.Text())
-				// With KeepLink KP-9000-9XHML-X, some values are unexpectedly prefixed with "0-"
-				cellValue = strings.TrimPrefix(cellValue, "0-")
-
-				switch j {
-				case 0:
-					port.Name = td.Text()
-				case 1:
-					port.State = td.Text()
-				case 2:
-					port.LinkStatus = td.Text()
-				case 3:
-					val, _ := strconv.ParseUint(cellValue, 10, 64)
-					port.TxGoodPkt = val
-				case 4:
-					val, _ := strconv.ParseUint(cellValue, 10, 64)
-					port.TxBadPkt = val
-				case 5:
-					val, _ := strconv.ParseUint(cellValue, 10, 64)
-					port.RxGoodPkt = val
-				case 6:
-					val, _ := strconv.ParseUint(cellValue, 10, 64)
-					port.RxBadPkt = val
-				}
-			})
-			stats.Ports = append(stats.Ports, port)
+	select {
+	case err := <-errCh:
+		// ErrServerClosed here would mean somebody else closed the server.
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			return fmt.Errorf("http server: %w", err)
 		}
-	})
-
-	return stats, nil
-}
-
-func parsePoESystem(doc *goquery.Document) (PoESystem, error) {
-	var system PoESystem
-
-	val := doc.Find(`input[name="pse_con_pwr"]`).AttrOr("value", "")
-
-	if val == "" {
-		return system, fmt.Errorf("pse_con_pwr value not found")
+		return nil
+	case <-ctx.Done():
+		logger.Info("shutdown requested, draining connections")
 	}
 
-	cons, err := strconv.ParseFloat(val, 64)
-	if err != nil {
-		return system, fmt.Errorf("invalid consumption value: %w", err)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+	defer cancel()
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		return fmt.Errorf("graceful shutdown: %w", err)
 	}
-
-	system.Consumption = cons
-	return system, nil
+	logger.Info("shutdown complete")
+	return nil
 }
 
-func parsePoEPorts(doc *goquery.Document) (PoEStatistics, error) {
-	var stats PoEStatistics
+// basicAuth guards h with HTTP basic authentication. Credentials are compared as
+// fixed-length digests in constant time so that neither their content nor their
+// length leaks through response timing.
+func basicAuth(h http.Handler, username, password string) http.Handler {
+	wantUser := sha256.Sum256([]byte(username))
+	wantPass := sha256.Sum256([]byte(password))
 
-	doc.Find("table tbody tr").Each(func(i int, s *goquery.Selection) {
-		if s.Find("th").Length() > 0 {
-			return
-		}
-
-		tds := s.ChildrenFiltered("td")
-		if tds.Length() != 7 {
-			return
-		}
-
-		var port PortPoE
-		tds.Each(func(j int, td *goquery.Selection) {
-			text := strings.TrimSpace(td.Text())
-			switch j {
-			case 0:
-				port.Name = text
-			case 1:
-				port.State = text
-			case 2:
-				port.Power = text
-			case 3:
-				port.Type = text
-			case 4:
-				port.Watts = parseFloatOrZero(text)
-			case 5:
-				port.Voltage = parseFloatOrZero(text)
-			case 6:
-				port.Current = parseFloatOrZero(text)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		user, pass, ok := r.BasicAuth()
+		if ok {
+			gotUser := sha256.Sum256([]byte(user))
+			gotPass := sha256.Sum256([]byte(pass))
+			if subtle.ConstantTimeCompare(gotUser[:], wantUser[:]) == 1 &&
+				subtle.ConstantTimeCompare(gotPass[:], wantPass[:]) == 1 {
+				h.ServeHTTP(w, r)
+				return
 			}
-		})
-
-		if port.Name != "" {
-			stats.Ports = append(stats.Ports, port)
 		}
+		w.Header().Set("WWW-Authenticate", `Basic realm="metrics", charset="UTF-8"`)
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
 	})
-
-	return stats, nil
 }
 
-func stateToFloat(state string) float64 {
-	return map[string]float64{
-		"Enable":  1.0,
-		"Disable": 0.0,
-	}[state]
-}
-
-func linkStatusToFloat(status string) float64 {
-	return map[string]float64{
-		"Link Up":   1.0,
-		"Link Down": 0.0,
-	}[status]
-}
-
-func parseFloatOrZero(s string) float64 {
-	if s == "-" || s == "" {
-		return 0
-	}
-	val, err := strconv.ParseFloat(s, 64)
+// isLoopback reports whether addr binds the loopback interface only.
+func isLoopback(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
 	if err != nil {
-		return 0
+		return false
 	}
-	return val
-}
-
-func powerToFloat(s string) float64 {
-	switch s {
-	case "On":
-		return 1
-	case "Off":
-		return 0
-	default:
-		return 0
+	if host == "localhost" {
+		return true
 	}
-}
-
-func typeToFloat(s string) float64 {
-	switch s {
-	case "Class1":
-		return 1
-	case "Class2":
-		return 2
-	case "Class3":
-		return 3
-	case "Class4":
-		return 4
-	default:
-		return 0
-	}
-}
-
-func normalizePortName(name string) string {
-	name = strings.TrimSpace(name)
-	if strings.HasPrefix(name, "Port ") {
-		return strings.TrimPrefix(name, "Port ")
-	}
-	return name
-}
-
-func getMD5Hash(text string) string {
-	hash := md5.Sum([]byte(text))
-	return hex.EncodeToString(hash[:])
-}
-
-func readConfig(filename string) (Config, error) {
-	var config Config
-
-	data, err := os.ReadFile(filename)
-	if err != nil {
-		return config, err
-	}
-
-	err = yaml.Unmarshal(data, &config)
-	if err != nil {
-		return config, err
-	}
-
-	return config, nil
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }

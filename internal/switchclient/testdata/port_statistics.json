@@ -1,0 +1,93 @@
+{
+  "PortNum": "10",
+  "Port_1": {
+    "Port_Id": "1",
+    "Port_Status": "Enabled",
+    "Link_Status": "1000MbpsFull",
+    "TxGoodPkt": "45569130",
+    "TxBadPkt": "0",
+    "RxGoodPkt": "404049278",
+    "RxBadPkt": "412"
+  },
+  "Port_2": {
+    "Port_Id": "2",
+    "Port_Status": "Enabled",
+    "Link_Status": "2500MbpsFull",
+    "TxGoodPkt": "518257233",
+    "TxBadPkt": "0",
+    "RxGoodPkt": "500225245",
+    "RxBadPkt": "0"
+  },
+  "Port_3": {
+    "Port_Id": "3",
+    "Port_Status": "Enabled",
+    "Link_Status": "Down",
+    "TxGoodPkt": "0",
+    "TxBadPkt": "0",
+    "RxGoodPkt": "0",
+    "RxBadPkt": "0"
+  },
+  "Port_4": {
+    "Port_Id": "4",
+    "Port_Status": "Disabled",
+    "Link_Status": "Down",
+    "TxGoodPkt": "0",
+    "TxBadPkt": "0",
+    "RxGoodPkt": "0",
+    "RxBadPkt": "0"
+  },
+  "Port_5": {
+    "Port_Id": "5",
+    "Port_Status": "Enabled",
+    "Link_Status": "100MbpsFull",
+    "TxGoodPkt": "1201",
+    "TxBadPkt": "3",
+    "RxGoodPkt": "994",
+    "RxBadPkt": "0"
+  },
+  "Port_6": {
+    "Port_Id": "6",
+    "Port_Status": "Enabled",
+    "Link_Status": "Down",
+    "TxGoodPkt": "0",
+    "TxBadPkt": "0",
+    "RxGoodPkt": "0",
+    "RxBadPkt": "0"
+  },
+  "Port_7": {
+    "Port_Id": "7",
+    "Port_Status": "Enabled",
+    "Link_Status": "Down",
+    "TxGoodPkt": "0",
+    "TxBadPkt": "0",
+    "RxGoodPkt": "0",
+    "RxBadPkt": "0"
+  },
+  "Port_8": {
+    "Port_Id": "8",
+    "Port_Status": "Enabled",
+    "Link_Status": "2500MbpsFull",
+    "TxGoodPkt": "88123456",
+    "TxBadPkt": "1",
+    "RxGoodPkt": "77654321",
+    "RxBadPkt": "9"
+  },
+  "Port_9": {
+    "Port_Id": "9",
+    "Port_Status": "Enabled",
+    "Link_Status": "10GbpsFull",
+    "TxGoodPkt": "9912345678",
+    "TxBadPkt": "0",
+    "RxGoodPkt": "8812345678",
+    "RxBadPkt": "2"
+  },
+  "Port_10": {
+    "Port_Id": "10",
+    "Port_Status": "Enabled",
+    "Link_Status": "Down",
+    "TxGoodPkt": "0",
+    "TxBadPkt": "-",
+    "RxGoodPkt": "0",
+    "RxBadPkt": "0"
+  }
+}
