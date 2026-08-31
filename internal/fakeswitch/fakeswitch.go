@@ -200,10 +200,10 @@ func buildPorts(n int, seed int64) []portModel {
 		p := portModel{
 			enabled: enabled,
 			linkUp:  linkUp,
-			txGood:  counterModel{base: uint64(rng.Int63n(5_000_000)), perSecond: rate},
-			txBad:   counterModel{base: uint64(rng.Int63n(10)), perSecond: rate / 100_000},
-			rxGood:  counterModel{base: uint64(rng.Int63n(5_000_000)), perSecond: rate * 1.3},
-			rxBad:   counterModel{base: uint64(rng.Int63n(20)), perSecond: rate / 50_000},
+			txGood:  counterModel{base: rng.Uint64() % 5_000_000, perSecond: rate},
+			txBad:   counterModel{base: rng.Uint64() % 10, perSecond: rate / 100_000},
+			rxGood:  counterModel{base: rng.Uint64() % 5_000_000, perSecond: rate * 1.3},
+			rxBad:   counterModel{base: rng.Uint64() % 20, perSecond: rate / 50_000},
 		}
 		if !linkUp {
 			p.txGood.perSecond, p.txBad.perSecond = 0, 0
@@ -312,6 +312,8 @@ func (s *Switch) serveLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if s.profile == ProfileBinardat {
+		// The emulated device serves plain HTTP, like the real ones.
+		//nolint:gosec // G124 does not apply to a device emulator
 		http.SetCookie(w, &http.Cookie{Name: cookieName, Value: deviceSessionValue, Path: "/"})
 	}
 	s.mu.Lock()

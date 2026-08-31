@@ -331,7 +331,7 @@ func TestCountersAdvanceMonotonically(t *testing.T) {
 	now = now.Add(10 * time.Second)
 	third := extractCounter(t, srv)
 
-	if !(third > second && second > first) {
+	if third <= second || second <= first {
 		t.Errorf("counters did not advance: %d then %d then %d", first, second, third)
 	}
 }

@@ -44,15 +44,22 @@ const (
 )
 
 func main() {
+	// The work happens in a function that returns, so the deferred signal
+	// cleanup runs before the process exits.
+	os.Exit(realMain())
+}
+
+func realMain() int {
 	// The signal context lets an in-flight scrape finish while new connections
 	// are refused, instead of dropping requests on the floor.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
 	if err := run(ctx, os.Args[1:], os.Stdout); err != nil {
-		fmt.Fprintf(os.Stderr, "cheap-switch-exporter: %v\n", err)
-		os.Exit(1)
+		_, _ = fmt.Fprintf(os.Stderr, "cheap-switch-exporter: %v\n", err)
+		return 1
 	}
+	return 0
 }
 
 type options struct {
@@ -105,7 +112,7 @@ func run(ctx context.Context, args []string, stdout io.Writer) error {
 		return err
 	}
 	if opts.showVersion {
-		fmt.Fprintf(stdout, "cheap-switch-exporter %s (%s)\n", Version, runtime.Version())
+		_, _ = fmt.Fprintf(stdout, "cheap-switch-exporter %s (%s)\n", Version, runtime.Version())
 		return nil
 	}
 
@@ -175,7 +182,7 @@ func newServer(opts options, cfg config.Config, registry *prometheus.Registry, l
 	// handler and write budgets have to be derived from the device timeout.
 	scrapeBudget := 3*cfg.Timeout() + 2*time.Second
 
-	var handler http.Handler = promhttp.HandlerFor(registry, promhttp.HandlerOpts{
+	handler := promhttp.HandlerFor(registry, promhttp.HandlerOpts{
 		ErrorLog: errLog,
 		// Serve whatever could be collected instead of failing the whole
 		// scrape when a single collector misbehaves.
@@ -220,7 +227,7 @@ func newServer(opts options, cfg config.Config, registry *prometheus.Registry, l
 			}
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
 			// The path is operator supplied; escape it rather than trusting it.
-			fmt.Fprintf(w, `<!DOCTYPE html><html><head><title>Cheap Switch Exporter</title></head>
+			_, _ = fmt.Fprintf(w, `<!DOCTYPE html><html><head><title>Cheap Switch Exporter</title></head>
 <body><h1>Cheap Switch Exporter</h1><p><a href="%s">Metrics</a></p></body></html>`,
 				html.EscapeString(opts.telemetryPath))
 		})

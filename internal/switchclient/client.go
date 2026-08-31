@@ -230,6 +230,7 @@ func (c *Client) addAuthCookie(req *http.Request) {
 			return
 		}
 	}
+	//nolint:gosec // G124 applies to cookies a server sets, not to one sent in a request
 	req.AddCookie(&http.Cookie{Name: cookieName, Value: c.token})
 }
 

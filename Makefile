@@ -81,7 +81,7 @@ lint: ## Run golangci-lint if it is installed
 		golangci-lint run --timeout 5m; \
 	else \
 		echo "golangci-lint not installed, skipping."; \
-		echo "install: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.1.6"; \
+		echo "install: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.2"; \
 	fi
 
 vuln: ## Scan dependencies for known vulnerabilities

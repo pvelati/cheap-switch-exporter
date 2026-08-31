@@ -25,7 +25,7 @@ import (
 
 func main() {
 	if err := run(os.Args[1:], os.Stdout); err != nil {
-		fmt.Fprintf(os.Stderr, "fakeswitch: %v\n", err)
+		_, _ = fmt.Fprintf(os.Stderr, "fakeswitch: %v\n", err)
 		os.Exit(1)
 	}
 }
@@ -58,7 +58,7 @@ func run(args []string, out io.Writer) error {
 			if p.SupportsPoE() {
 				poe = "  (serves the PoE pages)"
 			}
-			fmt.Fprintf(out, "%s%s\n", p, poe)
+			_, _ = fmt.Fprintf(out, "%s%s\n", p, poe)
 		}
 		return nil
 	}
@@ -80,8 +80,8 @@ func run(args []string, out io.Writer) error {
 		Handler:           sw,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
-	fmt.Fprintf(out, "fake switch %q with %d ports on http://%s\n", *profile, *ports, *listen)
-	fmt.Fprintf(out, "point the exporter at it with:\n"+
+	_, _ = fmt.Fprintf(out, "fake switch %q with %d ports on http://%s\n", *profile, *ports, *listen)
+	_, _ = fmt.Fprintf(out, "point the exporter at it with:\n"+
 		"  CSE_ADDRESS=%s CSE_USERNAME=%s CSE_PASSWORD=%s go run . --web.listen-address 127.0.0.1:9101\n",
 		*listen, *username, *password)
 	return srv.ListenAndServe()

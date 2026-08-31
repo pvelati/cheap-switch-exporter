@@ -111,13 +111,13 @@ func TestNewServerMetricsAtRoot(t *testing.T) {
 		config.Config{Address: "h", Username: "u", Password: "p"}, reg, logger)
 
 	rec := httptest.NewRecorder()
-	srv.Handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	srv.Handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil))
 	if rec.Code != http.StatusOK {
 		t.Errorf("GET / = %d, want 200", rec.Code)
 	}
 
 	rec = httptest.NewRecorder()
-	srv.Handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, healthPath, nil))
+	srv.Handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, healthPath, nil))
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "ok") {
 		t.Errorf("GET %s = %d %q, want the probe to survive", healthPath, rec.Code, rec.Body.String())
 	}
@@ -135,7 +135,7 @@ func TestLandingPageEscapesTelemetryPath(t *testing.T) {
 		prometheus.NewRegistry(), logger)
 
 	rec := httptest.NewRecorder()
-	srv.Handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	srv.Handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil))
 	if strings.Contains(rec.Body.String(), "<script>") {
 		t.Errorf("the landing page emitted raw markup: %s", rec.Body.String())
 	}
@@ -217,7 +217,7 @@ func TestBasicAuth(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+			req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/metrics", nil)
 			if tc.setAuth {
 				req.SetBasicAuth(tc.user, tc.pass)
 			}
@@ -259,7 +259,8 @@ func fakeSwitch(t *testing.T) string {
 // freeAddr reserves a loopback port and releases it again.
 func freeAddr(t *testing.T) string {
 	t.Helper()
-	l, err := net.Listen("tcp", "127.0.0.1:0")
+	var lc net.ListenConfig
+	l, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("reserving a port: %v", err)
 	}

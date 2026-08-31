@@ -2,7 +2,12 @@
 
 # BUILDPLATFORM keeps the toolchain native while cross-compiling, so building
 # for a Raspberry Pi from an amd64 host does not run Go under emulation.
-FROM --platform=$BUILDPLATFORM golang:1.23.5-alpine3.21 AS build
+#
+# Pin a patched Go release, not just the minor line: the go directive in go.mod
+# is only a minimum, and the standard library in an early 1.25 patch carries
+# advisories that would otherwise end up in the shipped binary. Verified with
+# govulncheck under this exact toolchain.
+FROM --platform=$BUILDPLATFORM golang:1.25.14-alpine3.24 AS build
 
 WORKDIR /app
 
@@ -25,7 +30,7 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} \
     -o /out/cheap-switch-exporter \
     .
 
-FROM alpine:3.21
+FROM alpine:3.24
 
 LABEL maintainer="Paolo Velati <paolo.velati@gmail.com>"
 LABEL org.opencontainers.image.source="https://github.com/pvelati/cheap-switch-exporter"

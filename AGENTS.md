@@ -19,6 +19,11 @@ hardware. Do not report work as complete without it passing.
 Use `make vuln` when touching dependencies and `make acceptance` when touching
 the collector, the parsers or the HTTP layer.
 
+`make lint` is expected to report zero issues. It needs a `golangci-lint` built
+with a Go at least as new as the `go` directive in `go.mod`; an older one
+mis-typechecks the sources and reports nonsense. The pinned version is in
+`.github/workflows/ci.yml`.
+
 ## Repository map
 
 | Path | Responsibility |
@@ -131,7 +136,7 @@ These were considered and rejected. Do not reopen them without new information.
 | Readiness tied to device state | Kubernetes would cycle pods whenever a switch reboots |
 | Multi-target `/probe?target=` | A different product shape, not a refactor |
 | HTTPS to the device | No evidence any of these firmwares serve TLS |
-| `prometheus/exporter-toolkit` | Requires Go 1.25 and roughly fifteen transitive dependencies for a project with three |
+| `prometheus/exporter-toolkit` | Roughly fifteen transitive dependencies for a project with three; TLS and basic auth are already covered by the `web` config section |
 | Renaming metrics now | Breaks every existing dashboard; belongs in a major version |
 
 ## When you are unsure

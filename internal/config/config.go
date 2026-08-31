@@ -29,6 +29,8 @@ const (
 // Environment variables that override the configuration file. They exist so
 // that secrets can be injected by a secret manager or container orchestrator
 // instead of being stored in clear text on a mounted volume.
+//
+//nolint:gosec // these are environment variable names, not embedded secrets
 const (
 	EnvAddress         = "CSE_ADDRESS"
 	EnvUsername        = "CSE_USERNAME"

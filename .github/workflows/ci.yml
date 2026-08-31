@@ -4,6 +4,9 @@ on:
   push:
     branches: [main]
   pull_request:
+  schedule:
+    # Weekly, so a new advisory against an unchanged dependency still surfaces.
+    - cron: "17 4 * * 1"
 
 permissions:
   contents: read
@@ -44,10 +47,33 @@ jobs:
         with:
           go-version-file: go.mod
 
-      # v8 of the action supports golangci-lint v2 configuration files.
+      # v8 of the action supports golangci-lint v2 configuration files. The
+      # version is pinned to one built with a Go at least as new as the
+      # toolchain in go.mod, otherwise the linter mis-typechecks the sources.
       - uses: golangci/golangci-lint-action@v8
         with:
-          version: v2.1.6
+          version: v2.13.2
+
+  # The exporter parses untrusted HTML from a network device, so a reachable
+  # vulnerability in the parser matters. Runs on a schedule too, because a new
+  # advisory can land without this repository changing.
+  vuln:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Deliberately not go-version-file here. The go directive is a minimum, so
+      # setup-go would install the oldest patch of that line and govulncheck
+      # would then report standard library advisories fixed in later patches,
+      # which say nothing about this repository. What the project controls is its
+      # dependencies, scanned here, and the Go version in the shipped image,
+      # which the Dockerfile pins to a patched release.
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: govulncheck
+        run: make vuln
 
   docker:
     runs-on: ubuntu-latest

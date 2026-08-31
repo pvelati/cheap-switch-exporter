@@ -26,7 +26,7 @@ Many budget-friendly network switches do not support standard SNMP monitoring. T
 
 ### Prerequisites
 
-- Go 1.23+
+- Go 1.25+
 - Docker (optional)
 
 ### Direct Installation
