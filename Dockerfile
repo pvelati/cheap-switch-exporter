@@ -7,7 +7,7 @@
 # is only a minimum, and the standard library in an early 1.25 patch carries
 # advisories that would otherwise end up in the shipped binary. Verified with
 # govulncheck under this exact toolchain.
-FROM --platform=$BUILDPLATFORM golang:1.25.14-alpine3.24 AS build
+FROM --platform=$BUILDPLATFORM golang:1.27.1-alpine3.24 AS build
 
 WORKDIR /app
 
