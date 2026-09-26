@@ -1,7 +1,39 @@
 ---
+# Switch web interface. Host or host:port only, no scheme and no path.
 address: "192.168.1.1"
 username: "admin"
 password: "admin"
+
+# Minimum delay between two polls of the switch. Scrapes arriving sooner are
+# answered from the previous result, which protects the device from short scrape
+# intervals and from redundant Prometheus servers. Set to 0 to poll on every
+# scrape.
 poll_rate_seconds: 10
+
+# Timeout of a single HTTP request to the switch.
 timeout_seconds: 5
-poe: 0
+
+# Scrape the PoE pages. Accepts true/false; 1/0 also still works.
+poe: false
+
+# How the device exposes its statistics.
+#   html  the RTL8373 style web interface, scraped from /port.cgi (default)
+#   json  MaxLinear based devices serving /port_statistics.json
+# The json family also reports port_link_speed_mbps and does not support poe.
+firmware: html
+
+# Optional hardening of the exporter's own endpoint. Everything below can be
+# left out entirely.
+#
+# Credentials can also be supplied through the environment, which avoids writing
+# them to disk:
+#   CSE_ADDRESS, CSE_USERNAME, CSE_PASSWORD
+#   CSE_WEB_AUTH_USERNAME, CSE_WEB_AUTH_PASSWORD
+web:
+  # Serve /metrics over HTTPS. Both entries are required together.
+  tls_cert_file: ""
+  tls_key_file: ""
+  # Require HTTP basic authentication on /metrics. Both entries are required
+  # together. /healthz stays open so container health checks keep working.
+  auth_username: ""
+  auth_password: ""
