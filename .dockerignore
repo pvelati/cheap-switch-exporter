@@ -1,0 +1,17 @@
+# Everything the image build does not need. Keeping the context small also keeps
+# a real config.yaml, which holds the switch password in clear text, out of the
+# build cache and out of any intermediate layer.
+#
+# Note: config.yaml.example is deliberately NOT excluded, the image ships it.
+.git
+.github
+.gitignore
+.golangci.yml
+.dockerignore
+Dockerfile
+config.yaml
+*.md
+dashboards
+cheap-switch-exporter
+*.test
+*.out
