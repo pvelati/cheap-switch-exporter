@@ -84,9 +84,29 @@ type PoESystem struct {
 // Rows are recognised by shape and content rather than by position, because the
 // statistics table is not always the first table on the page and not every
 // firmware marks its header row with <th>.
+// byteLayoutHeader reports whether the page's seven-column header names byte
+// counters. That identifies the HC-SWTGW218AS layout: good packets only, plus
+// byte counters split into 32-bit halves, and no bad-packet columns. The layout
+// is a property of the page, not of individual rows, because an idle port's
+// rows hold nothing but zeros.
+func byteLayoutHeader(doc *goquery.Document) bool {
+	found := false
+	doc.Find("tr").EachWithBreak(func(_ int, row *goquery.Selection) bool {
+		th := row.ChildrenFiltered("th")
+		if th.Length() == portStatsColumns &&
+			strings.Contains(foldKey(th.Last().Text()), "byte") {
+			found = true
+			return false
+		}
+		return true
+	})
+	return found
+}
+
 func parsePortStatistics(doc *goquery.Document, logger *slog.Logger) ([]Port, error) {
 	var ports []Port
 	seen := make(map[string]struct{})
+	layoutBytes := byteLayoutHeader(doc)
 
 	doc.Find("tr").EachWithBreak(func(_ int, row *goquery.Selection) bool {
 		cells, ok := dataCells(row, portStatsColumnsWithBytes)
@@ -100,16 +120,27 @@ func parsePortStatistics(doc *goquery.Document, logger *slog.Logger) ([]Port, er
 			Name:      normalizePortName(cells[0]),
 			Enabled:   parseEnabled(cells[1]),
 			LinkUp:    parseLinkUp(cells[2]),
-			TxGoodPkt: parseUint(cells[3]),
-			TxBadPkt:  parseUint(cells[4]),
-			RxGoodPkt: parseUint(cells[5]),
-			RxBadPkt:  parseUint(cells[6]),
+			TxGoodPkt: parseCounter(cells[3]),
+		}
+		if layoutBytes || looksHighLow(cells[5]) {
+			// This layout (HC-SWTGW218AS) reports good packets only, plus byte
+			// counters split into two 32-bit halves ("high-low"). It has no
+			// bad-packet columns. Rows without a recognisable header fall back
+			// to the split in the first byte cell; packet cells never carry a
+			// dash.
+			port.RxGoodPkt = parseCounter(cells[4])
+			port.TxBytes = parseCounter(cells[5])
+			port.RxBytes = parseCounter(cells[6])
+		} else {
+			port.TxBadPkt = parseCounter(cells[4])
+			port.RxGoodPkt = parseCounter(cells[5])
+			port.RxBadPkt = parseCounter(cells[6])
 		}
 		// The byte counters are a later column pair on firmwares that report
 		// them; the packet columns keep their positions in both layouts.
 		if len(cells) == portStatsColumnsWithBytes {
-			port.TxBytes = parseUint(cells[7])
-			port.RxBytes = parseUint(cells[8])
+			port.TxBytes = parseCounter(cells[7])
+			port.RxBytes = parseCounter(cells[8])
 		}
 		// Header rows and unrelated seven-column tables yield no usable value.
 		if port.Name == "" || !port.hasValue() {
@@ -278,6 +309,45 @@ func parseClass(s string) *uint8 {
 		return nil
 	}
 	return ptr(uint8(v))
+}
+
+// looksHighLow reports whether a cell holds a 64-bit counter split into two
+// 32-bit halves ("46-2652617423"). A bare dash is the "no value" marker, not a
+// split, so both halves must be present.
+func looksHighLow(s string) bool {
+	i := strings.IndexByte(s, '-')
+	if i <= 0 || i >= len(s)-1 {
+		return false
+	}
+	return allDigits(s[:i]) && allDigits(s[i+1:])
+}
+
+func allDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// parseCounter reads a counter cell, plain or "high-low" split (the device's
+// own web UI computes high*2^32+low). Unreadable cells yield nil so the caller
+// can skip the sample instead of reporting a fake zero.
+func parseCounter(s string) *uint64 {
+	if i := strings.IndexByte(s, '-'); i > 0 && i < len(s)-1 {
+		hi, err1 := strconv.ParseUint(cleanNumber(s[:i]), 10, 32)
+		lo, err2 := strconv.ParseUint(cleanNumber(s[i+1:]), 10, 32)
+		if err1 != nil || err2 != nil {
+			return nil
+		}
+		v := hi<<32 | lo
+		return &v
+	}
+	return parseUint(s)
 }
 
 // parseUint reads a counter cell. Unreadable cells yield nil so the caller can

@@ -126,6 +126,35 @@ var fixtures = []fixtureCase{
 			}
 		},
 	},
+	{
+		device:    "Horaco HC-SWTGW218AS (issue #19)",
+		file:      "port_stats_hcswtgw218as.html",
+		wantPorts: 9,
+		wantFirst: Port{
+			Name: "1", Enabled: ptr(true), LinkUp: ptr(true),
+			TxGoodPkt: ptr(uint64(493681129)),
+			RxGoodPkt: ptr(uint64(593226318)),
+			TxBytes:   ptr(uint64(200221113039)),
+			RxBytes:   ptr(uint64(351332015369)),
+		},
+		extra: func(t *testing.T, ports []Port) {
+			// This layout has no bad-packet columns; they must stay nil.
+			for i, p := range ports {
+				if p.TxBadPkt != nil || p.RxBadPkt != nil {
+					t.Errorf("ports[%d] bad pkts = %s / %s, want no sample",
+						i, fmtUint(p.TxBadPkt), fmtUint(p.RxBadPkt))
+				}
+			}
+			// A "0-0" high-low pair is a real zero, not a missing value.
+			if !uintEq(ports[1].TxBytes, 0) || !uintEq(ports[1].RxBytes, 0) {
+				t.Errorf("port 2 bytes = %s / %s, want 0",
+					fmtUint(ports[1].TxBytes), fmtUint(ports[1].RxBytes))
+			}
+			if !boolEq(ports[1].LinkUp, false) {
+				t.Errorf("port 2 link = %s, want down", formatPort(ports[1]))
+			}
+		},
+	},
 }
 
 func TestParsePortStatisticsFixtures(t *testing.T) {
