@@ -237,6 +237,48 @@ func TestAcceptanceCountersAreMonotonic(t *testing.T) {
 	}
 }
 
+// Issue #19, end to end: a clean exporter against a session-required device
+// must log in by itself and then reuse the session, with no browser involved.
+func TestAcceptanceSessionBootstrap(t *testing.T) {
+	clearEnv(t)
+	switchAddr, sw := startFake(t, fakeswitch.Options{Profile: fakeswitch.ProfileSession, Seed: 1})
+	listenAddr := freeAddr(t)
+	configPath := writeConfig(t, fmt.Sprintf(
+		"address: %q\nusername: admin\npassword: admin\n"+
+			"poll_rate_seconds: 0\ntimeout_seconds: 2\n",
+		switchAddr))
+	startExporter(t, configPath, listenAddr)
+
+	// First scrape: the device was not logged in, so the exporter must
+	// authenticate itself and then serve data.
+	body := scrape(t, listenAddr)
+	if got := mustSample(t, body, "exporter_up"); got != 1 {
+		t.Fatalf("exporter_up = %v, want 1", got)
+	}
+	if !strings.Contains(body, `port_state{port="1"}`) {
+		t.Error("port metrics are missing after the bootstrap")
+	}
+	// The rejected first answer is not counted; PortStats = 1 proves the data
+	// was only served after the exporter's own login.
+	if c := sw.Counts(); c.Login != 1 || c.PortStats != 1 {
+		t.Fatalf("after first scrape: Login = %d, PortStats = %d, want 1 and 1 (login, then the retried request)",
+			c.Login, c.PortStats)
+	}
+
+	// Second scrape: the session is valid, so no further login may happen.
+	body = scrape(t, listenAddr)
+	if got := mustSample(t, body, "exporter_up"); got != 1 {
+		t.Fatalf("exporter_up = %v, want 1", got)
+	}
+	if !strings.Contains(body, `port_state{port="1"}`) {
+		t.Error("port metrics are missing on the second scrape")
+	}
+	if c := sw.Counts(); c.Login != 1 || c.PortStats != 2 {
+		t.Fatalf("after second scrape: Login = %d, PortStats = %d, want 1 and 2 (session reused)",
+			c.Login, c.PortStats)
+	}
+}
+
 // A device that drops sessions under load must not produce gaps: the exporter
 // re-authenticates and retries within the same scrape.
 func TestAcceptanceRecoversFromDroppedSessions(t *testing.T) {
