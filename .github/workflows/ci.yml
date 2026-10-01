@@ -59,7 +59,7 @@ jobs:
       # v8 of the action supports golangci-lint v2 configuration files. The
       # version is pinned to one built with a Go at least as new as the
       # toolchain in go.mod, otherwise the linter mis-typechecks the sources.
-      - uses: golangci/golangci-lint-action@v8
+      - uses: golangci/golangci-lint-action@v9
         with:
           version: v2.13.2
 
