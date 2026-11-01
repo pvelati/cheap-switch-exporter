@@ -1,0 +1,171 @@
+<html>
+
+<head>
+<title>Spanning Tree Port Setting</title>
+<link rel="stylesheet" type="text/css" href="/style.css">
+<script type="text/javascript">
+</script>
+</head>
+
+<body>
+<center>
+
+<fieldset>
+<legend>Spanning Tree Port Setting</legend>
+<form method="post" action="loop.cgi?page=stp_port">
+  <table border="1">
+    <tr>
+      <th >Port</th>
+      <th width="210">Path Cost</th>
+      <th width="100">Priority</th>
+      <th width="100">P2P</th>
+      <th width="100">Edge</th>
+    </tr>
+    <tr>
+      <td align="center">
+        <select name="portid" multiple size="6" >
+          <option value="0">Port 1
+          <option value="1">Port 2
+          <option value="2">Port 3
+          <option value="3">Port 4
+          <option value="4">Port 5
+          <option value="5">Port 6
+      </td>
+      <td align="center"><input type="text" size="10" name="cost" maxlength="9" value="0"> <br>(1~200000000),0=Auto</td>
+      <td align="center">
+        <select name="priority" size="1">
+          <option value="0">0
+          <option value="16">16
+          <option value="32">32
+          <option value="48">48
+          <option value="64">64
+          <option value="80">80
+          <option value="96">96
+          <option value="112">112
+          <option value="128" selected>128
+          <option value="144">144
+          <option value="160">160
+          <option value="176">176
+          <option value="192">192
+          <option value="208">208
+          <option value="224">224
+          <option value="240">240
+        </select>
+      </td>
+      <td align="center">
+        <select name="p2p">
+          <option value="false">False
+          <option value="true">True
+          <option value="auto" selected>Auto
+        </select>
+      </td>
+      <td align="center">
+        <select name="edge">
+          <option value="false">False
+          <option value="true">True
+        </select>
+      </td>
+    </tr>
+  </table>
+  <br style="line-height:50%">
+  <input type="submit" name="submit" value="   Apply   ">
+  <input type="hidden" name="cmd" value="stp_port">
+</form>
+<hr>
+<br>
+<table border="1">
+  <tr>
+    <th rowspan="2" width="115">Port</th>
+    <th rowspan="2" width="165">State</th>
+    <th rowspan="2" width="165">Role</th>
+    <th colspan="2" width="165">Path Cost</th>
+    <th rowspan="2" width="90">Priority</th>
+    <th colspan="2" width="90">P2P</th>
+    <th colspan="2" width="90">Edge</th>
+  </tr>
+  <tr>
+    <th>Config</th>
+    <th>Actual</th>
+    <th>Config</th>
+    <th>Actual</th>
+    <th>Config</th>
+    <th>Actual</th>
+  </tr>
+  <tr>
+    <td>Port 1</td>
+    <td align="center">Forwarding</td>
+<td align="center">Root</td>
+<td align="center">Auto</td>
+<td align="center">20000</td>
+    <td align="center">128</td>
+    <td align="center">Auto</td>
+<td align="center">TRUE</td>
+    <td align="center">False</td>
+    <td align="center">False</td>
+  </tr>
+  <tr>
+    <td>Port 2</td>
+    <td align="center">Forwarding</td>
+<td align="center">Designated</td>
+<td align="center">Auto</td>
+<td align="center">17000</td>
+    <td align="center">128</td>
+    <td align="center">True</td>
+<td align="center">TRUE</td>
+    <td align="center">True</td>
+    <td align="center">True</td>
+  </tr>
+  <tr>
+    <td>Port 3</td>
+    <td align="center">Forwarding</td>
+<td align="center">Designated</td>
+<td align="center">Auto</td>
+<td align="center">17000</td>
+    <td align="center">128</td>
+    <td align="center">True</td>
+<td align="center">TRUE</td>
+    <td align="center">True</td>
+    <td align="center">True</td>
+  </tr>
+  <tr>
+    <td>Port 4</td>
+    <td align="center">Forwarding</td>
+<td align="center">Designated</td>
+<td align="center">Auto</td>
+<td align="center">17000</td>
+    <td align="center">128</td>
+    <td align="center">True</td>
+<td align="center">TRUE</td>
+    <td align="center">True</td>
+    <td align="center">True</td>
+  </tr>
+  <tr>
+    <td>Port 5</td>
+    <td align="center">Disabled</td>
+<td align="center">-</td>
+<td align="center">Auto</td>
+<td align="center">-</td>
+    <td align="center">128</td>
+    <td align="center">Auto</td>
+<td align="center">-</td>
+    <td align="center">False</td>
+<td align="center">-</td>
+  </tr>
+  <tr>
+    <td>Port 6</td>
+    <td align="center">Disabled</td>
+<td align="center">-</td>
+<td align="center">Auto</td>
+<td align="center">-</td>
+    <td align="center">128</td>
+    <td align="center">Auto</td>
+<td align="center">-</td>
+    <td align="center">False</td>
+<td align="center">-</td>
+  </tr>
+</table>
+<br>
+</fieldset>
+</center>
+</body>
+</html>

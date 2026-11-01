@@ -106,6 +106,7 @@ password: "password"             # Web interface password
 poll_rate_seconds: 10            # Minimum delay between two polls of the switch
 timeout_seconds: 5               # Per-request timeout
 poe: false                       # Scrape the PoE pages (1/0 also accepted)
+stp: false                       # Scrape the spanning tree page
 firmware: html                   # html (default) or json, see below
 ```
 
@@ -198,6 +199,14 @@ A value the exporter cannot interpret produces no sample at all, rather than a z
 - `poe_port_watts`: PoE port power consumption in watts
 - `poe_port_current_ma`: PoE port current in mA
 - `poe_system_consumption_watts`: Total PoE consumption in watts
+
+### Spanning tree metrics (when enabled in config)
+
+Read from `/loop.cgi?page=stp_port`, so leave `stp` off on a switch with spanning tree turned off. `firmware: json` does not support it.
+
+- `port_rstp_state`: Port state (0=Disabled, 1=Discarding, 2=Learning, 3=Forwarding). Blocking and listening, from classic spanning tree, count as discarding.
+- `port_rstp_role`: Port role in the `role` label (`root`, `designated`, ...), always 1. Absent while the port has no role.
+- `port_rstp_path_cost`: Path cost in use. Absent while the port has none.
 
 ### Exporter metrics
 

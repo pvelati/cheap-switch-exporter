@@ -87,7 +87,7 @@ lint: ## Run golangci-lint if it is installed
 vuln: ## Scan dependencies for known vulnerabilities
 	$(GO) run golang.org/x/vuln/cmd/govulncheck@latest ./...
 
-fake: ## Run a fake switch (PROFILE=standard|quirks|keeplink|session|binardat|poe|garbage|...)
+fake: ## Run a fake switch (PROFILE=standard|quirks|keeplink|session|binardat|poe|stp|garbage|...)
 	$(GO) run ./cmd/fakeswitch -profile $(PROFILE) -listen $(FAKE_PORT)
 
 ## Runs a fake switch in the background and the real exporter in the foreground,
@@ -96,11 +96,12 @@ fake: ## Run a fake switch (PROFILE=standard|quirks|keeplink|session|binardat|po
 ## The config is generated in /tmp on purpose: reading ./config.yaml here would
 ## point the demo at a real switch if the developer has one configured.
 demo: DEMO_POE = $(if $(filter poe,$(PROFILE)),true,false)
+demo: DEMO_STP = $(if $(filter stp,$(PROFILE)),true,false)
 demo: ## Run a fake switch plus the exporter for manual inspection
 	@$(GO) build -o /tmp/cse-fakeswitch ./cmd/fakeswitch
 	@$(GO) build -o /tmp/cse-exporter .
-	@printf 'address: "%s"\nusername: admin\npassword: admin\npoll_rate_seconds: 0\ntimeout_seconds: 5\npoe: %s\n' \
-		'$(FAKE_PORT)' '$(DEMO_POE)' > /tmp/cse-demo.yaml
+	@printf 'address: "%s"\nusername: admin\npassword: admin\npoll_rate_seconds: 0\ntimeout_seconds: 5\npoe: %s\nstp: %s\n' \
+		'$(FAKE_PORT)' '$(DEMO_POE)' '$(DEMO_STP)' > /tmp/cse-demo.yaml
 	@chmod 600 /tmp/cse-demo.yaml
 	@/tmp/cse-fakeswitch -profile $(PROFILE) -listen $(FAKE_PORT) & \
 	fake_pid=$$!; \

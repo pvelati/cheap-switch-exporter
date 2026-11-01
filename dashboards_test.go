@@ -38,6 +38,7 @@ func exposedMetrics(t *testing.T) map[string]bool {
 	c := collector.New(context.Background(), collector.Options{
 		Client: staticClient{},
 		PoE:    true,
+		STP:    true,
 	})
 	reg := prometheus.NewPedanticRegistry()
 	if err := reg.Register(c); err != nil {
@@ -85,6 +86,11 @@ func (staticClient) PoEPorts(context.Context) ([]switchclient.PoEPort, error) {
 
 func (staticClient) PoESystem(context.Context) (switchclient.PoESystem, error) {
 	return switchclient.PoESystem{ConsumptionWatts: 1}, nil
+}
+
+func (staticClient) STPPorts(context.Context) ([]switchclient.STPPort, error) {
+	state, cost := switchclient.STPStateForwarding, uint64(1)
+	return []switchclient.STPPort{{Name: "1", State: &state, Role: "root", PathCost: &cost}}, nil
 }
 
 func TestDashboardReferencesOnlyRealMetrics(t *testing.T) {

@@ -400,3 +400,46 @@ func fmtUint(v *uint64) string {
 	}
 	return fmt.Sprint(*v)
 }
+
+// Lianguo ZX-SWTGW215AS, firmware V1.9.1. The settings form above the status table
+// must not be read as data, and down ports have a dash for their role and cost.
+func TestParseSTPPorts(t *testing.T) {
+	ports, err := parseSTPPorts(loadDoc(t, "stp_port.html"), discardLogger())
+	if err != nil {
+		t.Fatalf("parseSTPPorts: %v", err)
+	}
+	if len(ports) != 6 {
+		t.Fatalf("got %d ports, want 6: %+v", len(ports), ports)
+	}
+	want := map[int]STPPort{
+		0: {Name: "1", State: ptr(STPStateForwarding), Role: "root", PathCost: ptr(uint64(20000))},
+		1: {Name: "2", State: ptr(STPStateForwarding), Role: "designated", PathCost: ptr(uint64(17000))},
+		4: {Name: "5", State: ptr(STPStateDisabled)},
+	}
+	for i, w := range want {
+		if !reflect.DeepEqual(ports[i], w) {
+			t.Errorf("ports[%d] = %+v, want %+v", i, ports[i], w)
+		}
+	}
+}
+
+func TestParseSTPPortsLoginPage(t *testing.T) {
+	_, err := parseSTPPorts(loadDoc(t, "port_stats_login.html"), discardLogger())
+	if !errors.Is(err, ErrNoData) {
+		t.Fatalf("err = %v, want ErrNoData", err)
+	}
+}
+
+func TestParseSTPState(t *testing.T) {
+	for in, want := range map[string]uint8{
+		"Disabled": STPStateDisabled, "Discarding": STPStateDiscarding, "Blocking": STPStateDiscarding,
+		"Listening": STPStateDiscarding, "Learning": STPStateLearning, "FORWARDING": STPStateForwarding,
+	} {
+		if got := parseSTPState(in); got == nil || *got != want {
+			t.Errorf("parseSTPState(%q) = %v, want %d", in, got, want)
+		}
+	}
+	if got := parseSTPState("-"); got != nil {
+		t.Errorf("parseSTPState(\"-\") = %d, want nil: an unknown state has no sample", *got)
+	}
+}
