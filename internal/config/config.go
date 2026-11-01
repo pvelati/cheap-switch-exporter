@@ -61,6 +61,9 @@ type Config struct {
 	// PoE enables scraping of the PoE pages. Accepts true/false as well as
 	// the historical 1/0 spelling.
 	PoE FlexBool `yaml:"poe"`
+	// STP enables scraping of the spanning tree page. Leave it off on switches
+	// with spanning tree turned off.
+	STP bool `yaml:"stp"`
 	// Firmware selects how the device exposes its statistics. Empty means
 	// FirmwareHTML, which is what every device supported before this key
 	// existed.
@@ -129,9 +132,9 @@ func (c Config) String() string {
 	c.Password = redactIfSet(c.Password)
 	c.Web.AuthPassword = redactIfSet(c.Web.AuthPassword)
 	return fmt.Sprintf("address=%s username=%s password=%s poll_rate=%s "+
-		"timeout=%s poe=%t tls=%t auth=%t",
+		"timeout=%s poe=%t stp=%t tls=%t auth=%t",
 		c.Address, c.Username, c.Password, c.PollRate(),
-		c.Timeout(), bool(c.PoE), c.TLSEnabled(), c.AuthEnabled()) + " firmware=" + c.FirmwareOrDefault()
+		c.Timeout(), bool(c.PoE), c.STP, c.TLSEnabled(), c.AuthEnabled()) + " firmware=" + c.FirmwareOrDefault()
 }
 
 func redactIfSet(s string) string {
@@ -222,6 +225,9 @@ func (c Config) Validate() error {
 		// would fail every scrape.
 		if bool(c.PoE) {
 			return fmt.Errorf("poe is not supported with firmware: %s", FirmwareJSON)
+		}
+		if c.STP {
+			return fmt.Errorf("stp is not supported with firmware: %s", FirmwareJSON)
 		}
 	default:
 		return fmt.Errorf("firmware must be %q or %q, got %q", FirmwareHTML, FirmwareJSON, c.Firmware)

@@ -16,6 +16,10 @@ timeout_seconds: 5
 # Scrape the PoE pages. Accepts true/false; 1/0 also still works.
 poe: false
 
+# Scrape the spanning tree page. Leave it off on a switch with spanning tree
+# turned off, or every poll reports exporter_up 0.
+stp: false
+
 # How the device exposes its statistics.
 #   html  the RTL8373 style web interface, scraped from /port.cgi (default)
 #   json  MaxLinear based devices serving /port_statistics.json

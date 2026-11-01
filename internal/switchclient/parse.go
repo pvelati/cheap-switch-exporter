@@ -24,6 +24,10 @@ const (
 	// the end.
 	portStatsColumnsWithBytes = 9
 	poePortColumns            = 7
+	// stpPortColumns is the status table of the spanning tree page: port, state,
+	// role, then configured and actual path cost, priority, P2P and edge. The
+	// settings form above it has five columns.
+	stpPortColumns = 10
 	// maxRows bounds the number of series a single response can create, so a
 	// broken page cannot blow up the time series cardinality.
 	maxRows = 256
@@ -77,6 +81,30 @@ func (p PoEPort) hasValue() bool {
 // PoESystem holds the switch-wide PoE figures.
 type PoESystem struct {
 	ConsumptionWatts float64
+}
+
+// Spanning tree port states, as published by port_rstp_state. They are ordered
+// by how far the port is towards passing traffic.
+const (
+	STPStateDisabled   uint8 = 0
+	STPStateDiscarding uint8 = 1
+	STPStateLearning   uint8 = 2
+	STPStateForwarding uint8 = 3
+)
+
+// STPPort is one row of the spanning tree status table.
+type STPPort struct {
+	Name  string
+	State *uint8
+	// Role is the lowercase port role ("root", "designated", ...), empty when
+	// the port has none, which is how a disabled port reports.
+	Role string
+	// PathCost is the cost in use, nil when the port has none.
+	PathCost *uint64
+}
+
+func (p STPPort) hasValue() bool {
+	return p.State != nil || p.Role != "" || p.PathCost != nil
 }
 
 // parsePortStatistics extracts the port statistics table.
@@ -206,6 +234,47 @@ func parsePoEPorts(doc *goquery.Document, logger *slog.Logger) ([]PoEPort, error
 	return ports, nil
 }
 
+// parseSTPPorts extracts the spanning tree status table.
+func parseSTPPorts(doc *goquery.Document, logger *slog.Logger) ([]STPPort, error) {
+	var ports []STPPort
+	seen := make(map[string]struct{})
+
+	doc.Find("tr").EachWithBreak(func(_ int, row *goquery.Selection) bool {
+		cells, ok := dataCells(row, stpPortColumns)
+		if !ok {
+			return true
+		}
+		port := STPPort{
+			Name:     normalizePortName(cells[0]),
+			State:    parseSTPState(cells[1]),
+			PathCost: parseUint(cells[4]),
+		}
+		if role := foldKey(cells[2]); role != "-" {
+			port.Role = role
+		}
+		if port.Name == "" || !port.hasValue() {
+			return true
+		}
+		if _, dup := seen[port.Name]; dup {
+			logger.Warn("ignoring duplicate spanning tree port row", "port", port.Name)
+			return true
+		}
+		seen[port.Name] = struct{}{}
+
+		if port.State == nil {
+			logger.Debug("unrecognised spanning tree state", "port", port.Name, "value", cells[1])
+		}
+
+		ports = append(ports, port)
+		return len(ports) < maxRows
+	})
+
+	if len(ports) == 0 {
+		return nil, ErrNoData
+	}
+	return ports, nil
+}
+
 // parsePoESystem extracts the total PoE consumption from its hidden input.
 func parsePoESystem(doc *goquery.Document) (PoESystem, error) {
 	raw, ok := doc.Find(`input[name="pse_con_pwr"]`).First().Attr("value")
@@ -289,6 +358,22 @@ func parsePowerOn(s string) *bool {
 	// A dash means no powered device is attached, so no power is delivered.
 	case "off", "power off", "false", "0", "-":
 		return ptr(false)
+	}
+	return nil
+}
+
+// parseSTPState maps the state column. Classic spanning tree spells out blocking
+// and listening where RSTP reports discarding.
+func parseSTPState(s string) *uint8 {
+	switch foldKey(s) {
+	case "disabled":
+		return ptr(STPStateDisabled)
+	case "discarding", "blocking", "listening":
+		return ptr(STPStateDiscarding)
+	case "learning":
+		return ptr(STPStateLearning)
+	case "forwarding":
+		return ptr(STPStateForwarding)
 	}
 	return nil
 }

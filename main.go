@@ -172,6 +172,7 @@ func run(ctx context.Context, args []string, stdout io.Writer) error {
 			Client:      client,
 			Logger:      logger,
 			PoE:         bool(cfg.PoE),
+			STP:         cfg.STP,
 			Timeout:     cfg.Timeout(),
 			MinInterval: cfg.PollRate(),
 			Version:     Version,
@@ -202,9 +203,14 @@ func newLogger(w io.Writer, level, format string) (*slog.Logger, error) {
 func newServer(opts options, cfg config.Config, registry *prometheus.Registry, logger *slog.Logger) *http.Server {
 	errLog := slog.NewLogLogger(logger.Handler(), slog.LevelError)
 
-	// A scrape performs up to three sequential requests to the switch, so the
-	// handler and write budgets have to be derived from the device timeout.
-	scrapeBudget := 3*cfg.Timeout() + 2*time.Second
+	// A scrape performs up to three sequential requests to the switch, and one
+	// more with STP, so the handler and write budgets have to be derived from
+	// the device timeout.
+	requests := time.Duration(3)
+	if cfg.STP {
+		requests++
+	}
+	scrapeBudget := requests*cfg.Timeout() + 2*time.Second
 
 	handler := promhttp.HandlerFor(registry, promhttp.HandlerOpts{
 		ErrorLog: errLog,

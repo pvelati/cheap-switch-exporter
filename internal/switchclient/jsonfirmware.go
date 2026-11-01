@@ -98,6 +98,12 @@ func (c *JSONClient) PoEPorts(context.Context) ([]PoEPort, error) {
 	return nil, fmt.Errorf("PoE port statistics: %w", ErrUnsupported)
 }
 
+// STPPorts is not implemented: no spanning tree endpoint has been reported for
+// this family, and the configuration refuses the combination at startup.
+func (c *JSONClient) STPPorts(context.Context) ([]STPPort, error) {
+	return nil, fmt.Errorf("spanning tree statistics: %w", ErrUnsupported)
+}
+
 // PoESystem is not implemented; see PoEPorts.
 func (c *JSONClient) PoESystem(context.Context) (PoESystem, error) {
 	return PoESystem{}, fmt.Errorf("PoE system statistics: %w", ErrUnsupported)

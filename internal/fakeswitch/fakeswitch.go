@@ -40,6 +40,9 @@ const (
 	ProfileBinardat Profile = "binardat"
 	// ProfilePoE serves the PoE pages in addition to the port statistics.
 	ProfilePoE Profile = "poe"
+	// ProfileSTP serves the spanning tree page in addition to the port
+	// statistics. Lianguo ZX-SWTGW215AS, firmware V1.9.1.
+	ProfileSTP Profile = "stp"
 	// ProfileGarbage serves a page with no statistics table, standing in for an
 	// unsupported firmware.
 	ProfileGarbage Profile = "garbage"
@@ -60,13 +63,16 @@ const (
 func Profiles() []Profile {
 	return []Profile{
 		ProfileStandard, ProfileQuirks, ProfileKeepLink, ProfileSession,
-		ProfileBinardat, ProfilePoE, ProfileGarbage, ProfileUnauthorized,
+		ProfileBinardat, ProfilePoE, ProfileSTP, ProfileGarbage, ProfileUnauthorized,
 		ProfileSlow, ProfileFlaky, ProfileMaxLinear,
 	}
 }
 
 // SupportsPoE reports whether a profile serves the PoE pages.
 func (p Profile) SupportsPoE() bool { return p == ProfilePoE }
+
+// SupportsSTP reports whether a profile serves the spanning tree page.
+func (p Profile) SupportsSTP() bool { return p == ProfileSTP }
 
 // UsesJSON reports whether a profile serves JSON instead of HTML, which is the
 // firmware: json setting on the exporter side.
@@ -77,6 +83,7 @@ const (
 	pathPortStats = "/port.cgi"
 	pathPoEPorts  = "/pse_port.cgi"
 	pathPoESystem = "/pse_system.cgi"
+	pathSTPPorts  = "/loop.cgi"
 	pathLogin     = "/login.cgi"
 	pathAuthorize = "/authorize"
 	pathStatsJSON = "/port_statistics.json"
@@ -109,6 +116,7 @@ type Counts struct {
 	PortStats int
 	PoEPorts  int
 	PoESystem int
+	STPPorts  int
 	Rejected  int
 }
 
@@ -319,6 +327,13 @@ func (s *Switch) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.write(w, s.renderPoESystem())
+	case pathSTPPorts:
+		s.bump(func(c *Counts) { c.STPPorts++ })
+		if !s.profile.SupportsSTP() || r.URL.Query().Get("page") != "stp_port" {
+			http.NotFound(w, r)
+			return
+		}
+		s.write(w, s.renderSTPPorts())
 	default:
 		http.NotFound(w, r)
 	}
@@ -507,6 +522,37 @@ func (s *Switch) renderStats(elapsed float64) string {
 		}
 		b.WriteString(s.row(name, state, link, txGood, txBad, rxGood, rxBad,
 			fmt.Sprintf("%d", p.txBytes.at(elapsed)), fmt.Sprintf("%d", p.rxBytes.at(elapsed))))
+	}
+
+	b.WriteString("</table>\n</body></html>\n")
+	return b.String()
+}
+
+// renderSTPPorts lays the page out like the real one: a five-column settings
+// form, then the status table under a two-row header. The first port is the root
+// port, and the second and last, being down, have no role or cost.
+func (s *Switch) renderSTPPorts() string {
+	var b strings.Builder
+	b.WriteString("<html><head><title>Spanning Tree Port Setting</title></head><body>\n<table>\n")
+	b.WriteString("<tr><th>Port</th><th>Path Cost</th><th>Priority</th><th>P2P</th><th>Edge</th></tr>\n")
+	b.WriteString("<tr><td><select name=\"portid\"><option value=\"0\">Port 1</select></td>" +
+		"<td>0</td><td>128</td><td>Auto</td><td>False</td></tr>\n</table>\n<table>\n")
+	b.WriteString("<tr><th rowspan=\"2\">Port</th><th rowspan=\"2\">State</th><th rowspan=\"2\">Role</th>" +
+		"<th colspan=\"2\">Path Cost</th><th rowspan=\"2\">Priority</th><th colspan=\"2\">P2P</th>" +
+		"<th colspan=\"2\">Edge</th></tr>\n")
+	b.WriteString("<tr><th>Config</th><th>Actual</th><th>Config</th><th>Actual</th><th>Config</th><th>Actual</th></tr>\n")
+
+	for i, p := range s.ports {
+		name := fmt.Sprintf("Port %d", i+1)
+		if !p.linkUp {
+			b.WriteString(s.row(name, "Disabled", "-", "Auto", "-", "128", "Auto", "-", "False", "-"))
+			continue
+		}
+		role := "Designated"
+		if i == 0 {
+			role = "Root"
+		}
+		b.WriteString(s.row(name, "Forwarding", role, "Auto", "20000", "128", "Auto", "TRUE", "False", "False"))
 	}
 
 	b.WriteString("</table>\n</body></html>\n")
