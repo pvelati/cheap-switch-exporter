@@ -58,6 +58,7 @@ func newFakeSwitch(t *testing.T) (*Client, *requestLog) {
 		pathPortStats: "port_stats.html",
 		pathPoEPorts:  "pse_port.html",
 		pathPoESystem: "pse_system.html",
+		pathSTPPorts:  "stp_port.html",
 	}
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -540,5 +541,26 @@ func TestClientDoesNotLoginOnTransportErrors(t *testing.T) {
 	defer mu.Unlock()
 	if loginCalls != 0 {
 		t.Errorf("attempted %d logins after an HTTP 500, want 0", loginCalls)
+	}
+}
+
+// The spanning tree CGI serves several pages, so the query has to select the
+// right one.
+func TestClientSTP(t *testing.T) {
+	client, log := newFakeSwitch(t)
+
+	ports, err := client.STPPorts(context.Background())
+	if err != nil {
+		t.Fatalf("STPPorts: %v", err)
+	}
+	if len(ports) != 6 || ports[0].Role != "root" {
+		t.Errorf("ports = %+v, want 6 with the first the root port", ports)
+	}
+	req, ok := log.get(pathSTPPorts)
+	if !ok {
+		t.Fatal("the spanning tree page was not requested")
+	}
+	if got := req.query.Get("page"); got != "stp_port" {
+		t.Errorf("page = %q, want stp_port", got)
 	}
 }

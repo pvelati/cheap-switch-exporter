@@ -519,3 +519,55 @@ func grepLines(body, needle string) string {
 	}
 	return strings.Join(out, "\n")
 }
+
+// The spanning tree page runs through the real client against the real layout,
+// and a firmware without it degrades exporter_up without losing the port metrics.
+func TestAcceptanceSTP(t *testing.T) {
+	tests := []struct {
+		profile  fakeswitch.Profile
+		wantUp   float64
+		contains []string
+		absent   []string
+	}{
+		{
+			profile: fakeswitch.ProfileSTP, wantUp: 1,
+			contains: []string{
+				`port_rstp_state{port="1"} 3`,
+				`port_rstp_role{port="1",role="root"} 1`,
+				`port_rstp_role{port="3",role="designated"} 1`,
+				`port_rstp_path_cost{port="1"} 20000`,
+				`port_rstp_state{port="2"} 0`,
+			},
+			absent: []string{`port_rstp_role{port="2"`, `port_rstp_path_cost{port="2"}`},
+		},
+		{
+			profile: fakeswitch.ProfileStandard, wantUp: 0,
+			contains: []string{`port_state{port="1"} 1`},
+			absent:   []string{`port_rstp_state`},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(string(tc.profile), func(t *testing.T) {
+			clearEnv(t)
+			switchAddr, _ := startFake(t, fakeswitch.Options{Profile: tc.profile, Seed: 1})
+			listenAddr := freeAddr(t)
+			startExporter(t, writeConfig(t, fmt.Sprintf(
+				"address: %q\nusername: admin\npassword: admin\npoll_rate_seconds: 0\nstp: true\n", switchAddr)), listenAddr)
+
+			body := scrape(t, listenAddr)
+			if got := mustSample(t, body, "exporter_up"); got != tc.wantUp {
+				t.Errorf("exporter_up = %v, want %v", got, tc.wantUp)
+			}
+			for _, want := range tc.contains {
+				if !strings.Contains(body, want) {
+					t.Errorf("missing %q", want)
+				}
+			}
+			for _, unwanted := range tc.absent {
+				if strings.Contains(body, unwanted) {
+					t.Errorf("unexpectedly present: %q", unwanted)
+				}
+			}
+		})
+	}
+}

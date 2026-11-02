@@ -30,14 +30,17 @@ type fakeClient struct {
 	ports     []switchclient.Port
 	poePorts  []switchclient.PoEPort
 	poeSystem switchclient.PoESystem
+	stpPorts  []switchclient.STPPort
 
 	portsErr     error
 	poePortsErr  error
 	poeSystemErr error
+	stpPortsErr  error
 
 	portCalls      int
 	poePortCalls   int
 	poeSystemCalls int
+	stpPortCalls   int
 
 	// Session state, as a real client tracks it.
 	sessionActive bool
@@ -56,6 +59,13 @@ func (f *fakeClient) PoEPorts(context.Context) ([]switchclient.PoEPort, error) {
 	defer f.mu.Unlock()
 	f.poePortCalls++
 	return f.poePorts, f.poePortsErr
+}
+
+func (f *fakeClient) STPPorts(context.Context) ([]switchclient.STPPort, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.stpPortCalls++
+	return f.stpPorts, f.stpPortsErr
 }
 
 func (f *fakeClient) PoESystem(context.Context) (switchclient.PoESystem, error) {
@@ -150,6 +160,10 @@ func (c *ctxObservingClient) PortStatistics(ctx context.Context) ([]switchclient
 }
 
 func (c *ctxObservingClient) PoEPorts(ctx context.Context) ([]switchclient.PoEPort, error) {
+	return nil, ctx.Err()
+}
+
+func (c *ctxObservingClient) STPPorts(ctx context.Context) ([]switchclient.STPPort, error) {
 	return nil, ctx.Err()
 }
 
@@ -550,5 +564,60 @@ func TestScrapeDurationIsMeasured(t *testing.T) {
 exporter_last_scrape_duration_seconds 0.25
 `), "exporter_last_scrape_duration_seconds"); err != nil {
 		t.Error(err)
+	}
+}
+
+// A failing spanning tree page reports through exporter_up and keeps the port
+// metrics; with stp off the page is never requested.
+func TestCollectSTP(t *testing.T) {
+	state, cost := switchclient.STPStateForwarding, uint64(20000)
+	client := &fakeClient{
+		ports:    []switchclient.Port{{Name: "1"}},
+		stpPorts: []switchclient.STPPort{{Name: "1", State: &state, Role: "root", PathCost: &cost}, {Name: "2"}},
+	}
+	collect := func(stp bool) (*prometheus.Registry, *Collector) {
+		c := New(context.Background(), Options{Client: client, STP: stp, Timeout: time.Second})
+		reg := prometheus.NewRegistry()
+		reg.MustRegister(c)
+		return reg, c
+	}
+
+	reg, _ := collect(false)
+	if _, err := reg.Gather(); err != nil {
+		t.Fatalf("Gather: %v", err)
+	}
+	if client.stpPortCalls != 0 {
+		t.Errorf("the page was requested %d times with stp off", client.stpPortCalls)
+	}
+
+	reg, _ = collect(true)
+	families, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("Gather: %v", err)
+	}
+	got := map[string]int{}
+	for _, f := range families {
+		got[f.GetName()] = len(f.GetMetric())
+	}
+	// Port 2 reported nothing, so it has no samples at all.
+	for name, want := range map[string]int{"port_rstp_state": 1, "port_rstp_role": 1, "port_rstp_path_cost": 1} {
+		if got[name] != want {
+			t.Errorf("%s has %d samples, want %d", name, got[name], want)
+		}
+	}
+
+	client.stpPortsErr = errors.New("boom")
+	reg, _ = collect(true)
+	families, err = reg.Gather()
+	if err != nil {
+		t.Fatalf("Gather: %v", err)
+	}
+	for _, f := range families {
+		if f.GetName() == "exporter_up" && f.GetMetric()[0].GetGauge().GetValue() != 0 {
+			t.Error("exporter_up should be 0 when the spanning tree page fails")
+		}
+		if f.GetName() == "port_rstp_state" {
+			t.Error("port_rstp_state should be absent when the page fails")
+		}
 	}
 }

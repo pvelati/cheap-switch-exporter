@@ -24,6 +24,7 @@ type SwitchClient interface {
 	PortStatistics(ctx context.Context) ([]switchclient.Port, error)
 	PoESystem(ctx context.Context) (switchclient.PoESystem, error)
 	PoEPorts(ctx context.Context) ([]switchclient.PoEPort, error)
+	STPPorts(ctx context.Context) ([]switchclient.STPPort, error)
 	// SessionActive reports whether the client currently holds a session the
 	// device serves data for.
 	SessionActive() bool
@@ -38,6 +39,8 @@ type Options struct {
 	Logger *slog.Logger
 	// PoE enables the PoE pages.
 	PoE bool
+	// STP enables the spanning tree page.
+	STP bool
 	// Timeout bounds a single request to the switch. The collector allows this
 	// budget per request it has to make during one scrape.
 	Timeout time.Duration
@@ -59,6 +62,7 @@ type Collector struct {
 	client      SwitchClient
 	logger      *slog.Logger
 	poe         bool
+	stp         bool
 	timeout     time.Duration
 	minInterval time.Duration
 	version     string
@@ -91,6 +95,10 @@ type Collector struct {
 	poeVoltage           *prometheus.Desc
 	poeCurrent           *prometheus.Desc
 
+	stpState    *prometheus.Desc
+	stpRole     *prometheus.Desc
+	stpPathCost *prometheus.Desc
+
 	up              *prometheus.Desc
 	scrapeDuration  *prometheus.Desc
 	scrapeErrorsD   *prometheus.Desc
@@ -104,6 +112,7 @@ type result struct {
 	ports     []switchclient.Port
 	poePorts  []switchclient.PoEPort
 	poeSystem *switchclient.PoESystem
+	stpPorts  []switchclient.STPPort
 	duration  time.Duration
 	err       error
 }
@@ -131,6 +140,7 @@ func New(ctx context.Context, opts Options) *Collector {
 		client:      opts.Client,
 		logger:      logger,
 		poe:         opts.PoE,
+		stp:         opts.STP,
 		timeout:     opts.Timeout,
 		minInterval: opts.MinInterval,
 		version:     version,
@@ -171,6 +181,14 @@ func New(ctx context.Context, opts Options) *Collector {
 		poeCurrent: prometheus.NewDesc("poe_port_current_ma",
 			"PoE port current in mA.", portLabels, nil),
 
+		stpState: prometheus.NewDesc("port_rstp_state",
+			"Spanning tree state of the port (0=Disabled, 1=Discarding, 2=Learning, 3=Forwarding).", portLabels, nil),
+		stpRole: prometheus.NewDesc("port_rstp_role",
+			"Spanning tree role of the port, always 1. Absent while the port has no role.",
+			[]string{"port", "role"}, nil),
+		stpPathCost: prometheus.NewDesc("port_rstp_path_cost",
+			"Spanning tree path cost in use on the port.", portLabels, nil),
+
 		up: prometheus.NewDesc("exporter_up",
 			"Whether the last poll of the switch succeeded (1=yes, 0=no).", nil, nil),
 		scrapeDuration: prometheus.NewDesc("exporter_last_scrape_duration_seconds",
@@ -197,6 +215,7 @@ func (c *Collector) Describe(ch chan<- *prometheus.Desc) {
 		c.portTxBytes, c.portRxBytes,
 		c.poeSystemConsumption, c.poeState, c.poePower, c.poeType,
 		c.poeWatts, c.poeVoltage, c.poeCurrent,
+		c.stpState, c.stpRole, c.stpPathCost,
 		c.up, c.scrapeDuration, c.scrapeErrorsD, c.sessionActiveD, c.sessionReauthsD,
 		c.buildInfo,
 	} {
@@ -246,6 +265,13 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 		emit(ch, c.poeVoltage, prometheus.GaugeValue, p.Voltage, p.Name)
 		emit(ch, c.poeCurrent, prometheus.GaugeValue, p.Current, p.Name)
 	}
+	for _, p := range res.stpPorts {
+		emit(ch, c.stpState, prometheus.GaugeValue, p.State, p.Name)
+		if p.Role != "" {
+			ch <- prometheus.MustNewConstMetric(c.stpRole, prometheus.GaugeValue, 1, p.Name, p.Role)
+		}
+		emit(ch, c.stpPathCost, prometheus.GaugeValue, p.PathCost, p.Name)
+	}
 }
 
 // currentResult returns the cached poll when it is still fresh, otherwise it
@@ -274,7 +300,10 @@ func (c *Collector) scrape() *result {
 
 	requests := 1
 	if c.poe {
-		requests = 3
+		requests += 2
+	}
+	if c.stp {
+		requests++
 	}
 	ctx, cancel := context.WithTimeout(c.baseCtx, c.timeout*time.Duration(requests))
 	defer cancel()
@@ -300,6 +329,15 @@ func (c *Collector) scrape() *result {
 			c.recordError("fetching PoE port statistics", err)
 		} else {
 			res.poePorts = poePorts
+		}
+	}
+
+	if c.stp {
+		if stpPorts, err := c.client.STPPorts(ctx); err != nil {
+			errs = append(errs, err)
+			c.recordError("fetching spanning tree statistics", err)
+		} else {
+			res.stpPorts = stpPorts
 		}
 	}
 

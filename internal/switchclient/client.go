@@ -30,6 +30,7 @@ const (
 	pathPortStats = "/port.cgi"
 	pathPoESystem = "/pse_system.cgi"
 	pathPoEPorts  = "/pse_port.cgi"
+	pathSTPPorts  = "/loop.cgi"
 	pathReferer   = "/menu.cgi"
 	pathLogin     = "/login.cgi"
 )
@@ -170,6 +171,14 @@ func (c *Client) PoEPorts(ctx context.Context) ([]PoEPort, error) {
 	return ports, err
 }
 
+// STPPorts returns one entry per port of the spanning tree status table.
+func (c *Client) STPPorts(ctx context.Context) ([]STPPort, error) {
+	ports, _, err := fetchAndParse(ctx, c, pathSTPPorts, func(doc *goquery.Document) ([]STPPort, error) {
+		return parseSTPPorts(doc, c.logger)
+	})
+	return ports, err
+}
+
 // fetchAndParse retrieves path and parses it, authenticating once and retrying
 // if the device answered with something that holds no data. The second result
 // reports whether the successful request ran through a fresh login.
@@ -270,7 +279,7 @@ func (c *Client) fetch(ctx context.Context, path string) (*goquery.Document, err
 	// The web UI authenticates a GET by sending the credential form as the
 	// request body. It is unusual but required by every supported firmware.
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
-		c.baseURL+path+"?page=stats", strings.NewReader(c.body))
+		c.baseURL+path+pageQuery(path), strings.NewReader(c.body))
 	if err != nil {
 		return nil, fmt.Errorf("building request for %s: %w", path, err)
 	}
@@ -296,6 +305,15 @@ func (c *Client) fetch(ctx context.Context, path string) (*goquery.Document, err
 		return nil, fmt.Errorf("parsing %s response: %w", path, err)
 	}
 	return doc, nil
+}
+
+// pageQuery selects the page to read at path. Every statistics page answers to
+// page=stats; the CGI behind the spanning tree pages serves several others.
+func pageQuery(path string) string {
+	if path == pathSTPPorts {
+		return "?page=stp_port"
+	}
+	return "?page=stats"
 }
 
 // sessionState records whether the client holds a usable device session and how

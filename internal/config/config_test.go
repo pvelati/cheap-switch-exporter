@@ -411,3 +411,28 @@ func TestFirmwareJSONRejectsPoE(t *testing.T) {
 		t.Errorf("err = %v, want it to explain the combination", err)
 	}
 }
+
+func TestLoadSTP(t *testing.T) {
+	clearEnv(t)
+	base := "address: 10.0.0.1\nusername: admin\npassword: secret\n"
+
+	cfg, err := Load(writeConfig(t, base))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.STP {
+		t.Error("stp must default to off: the page does not exist on every firmware")
+	}
+
+	cfg, err = Load(writeConfig(t, base+"stp: true\n"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.STP {
+		t.Error("stp: true was not read")
+	}
+
+	if _, err := Load(writeConfig(t, base+"stp: true\nfirmware: json\n")); err == nil {
+		t.Error("want stp refused with firmware: json")
+	}
+}

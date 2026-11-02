@@ -449,3 +449,28 @@ func authorise(t *testing.T, srv *httptest.Server, usr, pwd string) {
 	defer func() { _ = resp.Body.Close() }()
 	_, _ = io.Copy(io.Discard, resp.Body)
 }
+
+func TestSTPProfileServesSTPPage(t *testing.T) {
+	srv, sw := serve(t, Options{Profile: ProfileSTP, Ports: 4, Seed: 4})
+
+	_, page := fetch(t, srv, pathSTPPorts+"?page=stp_port", nil)
+	for _, want := range []string{"<td>Root</td>", "<td>Designated</td>", "<td>Disabled</td>", "<td>20000</td>"} {
+		if !strings.Contains(page, want) {
+			t.Errorf("no %q in:\n%s", want, page)
+		}
+	}
+	// The CGI serves other pages too: only this one holds the table.
+	if status, _ := fetch(t, srv, pathSTPPorts+"?page=stats", nil); status != http.StatusNotFound {
+		t.Errorf("status = %d, want 404 for another page", status)
+	}
+	if c := sw.Counts(); c.STPPorts != 2 {
+		t.Errorf("counts = %+v, want two requests to the spanning tree page", c)
+	}
+}
+
+func TestNonSTPProfilesDoNotServeSTPPage(t *testing.T) {
+	srv, _ := serve(t, Options{Profile: ProfileStandard})
+	if status, _ := fetch(t, srv, pathSTPPorts+"?page=stp_port", nil); status != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", status)
+	}
+}
