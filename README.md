@@ -142,8 +142,8 @@ TLS is served with a minimum version of TLS 1.2. `/healthz` is intentionally lef
 ### Firmware families
 
 Two device families are supported. `firmware: html` is the default and covers
-every device in the table above: an RTL8373 style web interface whose statistics
-are scraped from `/port.cgi`.
+the RTL8373-style devices in the table above, whose statistics are scraped from
+`/port.cgi`.
 
 `firmware: json` covers MaxLinear based devices that authenticate through
 `/authorize` and serve `/port_statistics.json`, reported for the Goodtop
@@ -185,7 +185,7 @@ The exporter now authenticates lazily: it requests the statistics page, and only
 
 The `port` label carries the bare port identifier (`1`, `2`, …) on both the port and the PoE metrics, so the two can be joined in PromQL.
 
-`port_tx_bytes` and `port_rx_bytes` are only present when the device reports them: the HTML family must serve a nine-column statistics table (the classic seven columns plus `TxBytes` and `RxBytes`), and the JSON family must include `TxBytes`/`RxBytes` in `/port_statistics.json`.
+`port_tx_bytes` and `port_rx_bytes` are only present when the device reports them: the HTML family must serve either a nine-column statistics table (the classic seven columns plus `TxBytes` and `RxBytes`) or the seven-column HC-SWTGW218AS layout with good-packet and byte columns. The JSON family must include `TxBytes`/`RxBytes` in `/port_statistics.json`.
 
 A value the exporter cannot interpret produces no sample at all, rather than a zero. On a counter a fake zero would look like a device reset and would show up as a spike in `rate()`.
 
