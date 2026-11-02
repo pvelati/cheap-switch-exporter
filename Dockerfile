@@ -4,10 +4,10 @@
 # for a Raspberry Pi from an amd64 host does not run Go under emulation.
 #
 # Pin a patched Go release, not just the minor line: the go directive in go.mod
-# is only a minimum, and the standard library in an early 1.25 patch carries
-# advisories that would otherwise end up in the shipped binary. Verified with
-# govulncheck under this exact toolchain.
-FROM --platform=$BUILDPLATFORM golang:1.27.1-alpine3.24 AS build
+# is only a minimum, and an early patch of a supported Go release can carry
+# standard library advisories that would otherwise end up in the shipped binary.
+# Verified with govulncheck under this exact toolchain.
+FROM --platform=$BUILDPLATFORM golang:1.27.3-alpine3.24 AS build
 
 WORKDIR /app
 
