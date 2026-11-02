@@ -60,7 +60,8 @@ re-authentication points at the device, not the exporter.
 **Byte panels are only as good as the device.** The classic firmwares expose
 `TxGoodPkt` and `RxGoodPkt` only, so the packet panels always work, while the
 bytes per second panels stay empty unless the device reports byte counters
-(nine-column HTML statistics table, or `TxBytes`/`RxBytes` in the JSON payload).
+(a nine-column HTML statistics table, the seven-column HC-SWTGW218AS layout, or
+`TxBytes`/`RxBytes` in the JSON payload).
 Where present they are the panels to read for actual throughput.
 
 **Gaps in the panels are meaningful.** The exporter publishes no sample for a
